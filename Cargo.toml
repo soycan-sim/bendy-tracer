@@ -1,0 +1,10 @@
+[package]
+name = "bendy-tracer"
+authors = ["Simone Walter <waltersz@protonmail.com>"]
+version = "0.1.0"
+edition = "2021"
+description = "An experiment to make a pathtracer that can simulate gravitational lensing"
+repository = "https://github.com/soycan-sim/bendy-tracer"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
