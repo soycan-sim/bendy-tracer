@@ -1,0 +1,191 @@
+use std::collections::VecDeque;
+use std::hash::Hash;
+use std::mem;
+
+use hashbrown::HashMap;
+use serde::{Deserialize, Serialize};
+
+mod data;
+mod object;
+
+pub use self::data::*;
+pub use self::object::*;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Collection<K: Eq + Hash, V> {
+    collection: HashMap<K, V>,
+    next_key: u64,
+}
+
+impl<K: Eq + Hash, V> Collection<K, V> {
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.collection.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.collection.get_mut(key)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &'_ V> {
+        self.collection.values()
+    }
+}
+
+type ObjectCollection = Collection<ObjectRef, Object>;
+type DataCollection = Collection<DataRef, Data>;
+
+impl ObjectCollection {
+    pub fn add(&mut self, mut value: Object) -> ObjectRef {
+        let key = ObjectRef(self.next_key);
+        value.object_ref = Some(key);
+
+        self.collection.insert(key, value);
+
+        self.next_key += 1;
+
+        key
+    }
+}
+
+impl DataCollection {
+    pub fn add(&mut self, value: Data) -> DataRef {
+        let key = DataRef(self.next_key);
+        self.collection.insert(key, value);
+
+        self.next_key += 1;
+
+        key
+    }
+}
+
+impl<K: Eq + Hash, V> Default for Collection<K, V> {
+    fn default() -> Self {
+        Self {
+            collection: Default::default(),
+            next_key: 0,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Scene {
+    roots: Vec<ObjectRef>,
+    objects: ObjectCollection,
+    data: DataCollection,
+}
+
+impl Scene {
+    pub fn add_object(&mut self, object: Object) -> ObjectRef {
+        self.objects.add(object)
+    }
+
+    pub fn add_data(&mut self, data: Data) -> DataRef {
+        self.data.add(data)
+    }
+
+    pub fn get_object(&self, object: ObjectRef) -> &Object {
+        self.objects.get(&object).expect("invalid object ref")
+    }
+
+    pub fn get_data(&self, data: DataRef) -> &Data {
+        self.data.get(&data).expect("invalid data ref")
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &'_ Object> {
+        self.objects.iter()
+    }
+}
+
+#[derive(Default)]
+pub struct UpdateQueue {
+    queue: VecDeque<Update>,
+}
+
+impl UpdateQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn push(&mut self, update: Update) {
+        self.queue.push_back(update);
+    }
+
+    fn commit_one(self, scene: &mut Scene) -> Option<UpdateQueue> {
+        let mut update_queue = Self::default();
+
+        for update in self.queue {
+            match update {
+                Update::Object(object_ref, func) => {
+                    let object = scene
+                        .objects
+                        .get_mut(&object_ref)
+                        .expect("invalid object ref");
+                    func(object, &mut update_queue);
+                }
+            }
+        }
+
+        if update_queue.is_empty() {
+            None
+        } else {
+            Some(update_queue)
+        }
+    }
+
+    pub fn commit(&mut self, scene: &mut Scene) {
+        let mut update_queue = Self::new();
+        mem::swap(self, &mut update_queue);
+
+        let mut update_queue = Some(update_queue);
+
+        while let Some(queue) = update_queue.take() {
+            update_queue = queue.commit_one(scene);
+        }
+    }
+}
+
+pub type ObjectUpdate = dyn FnOnce(&mut Object, &mut UpdateQueue) + Send + Sync + 'static;
+
+pub enum Update {
+    Object(ObjectRef, Box<ObjectUpdate>),
+}
+
+impl Update {
+    pub fn object<F>(object_ref: ObjectRef, f: F) -> Self
+    where
+        F: FnOnce(&mut Object, &mut UpdateQueue) + Send + Sync + 'static,
+    {
+        Self::Object(object_ref, Box::new(f))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::{Affine3A, Vec3};
+
+    use super::*;
+
+    #[test]
+    fn update() {
+        let mut scene = Scene::default();
+        let object_ref = scene.add_object(Object::empty());
+
+        let mut update_queue = UpdateQueue::default();
+
+        update_queue.push(Update::object(object_ref, |object, update_queue| {
+            object.apply_transform(
+                update_queue,
+                Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0)),
+            );
+        }));
+    }
+}
