@@ -41,7 +41,7 @@ impl Default for Config {
 
 #[derive(Debug, Default)]
 pub struct Tracer {
-    config: Config,
+    pub config: Config,
 }
 
 impl Tracer {
