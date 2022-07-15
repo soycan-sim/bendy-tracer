@@ -185,9 +185,9 @@ fn main() -> Result<(), Error> {
                     };
 
                     if let Some(dir) = path.parent() {
-                        if dir.is_dir() {
+                        if dir.exists() {
                             ensure!(
-                                !dir.exists(),
+                                dir.is_dir(),
                                 "{dir} is not a directory",
                                 dir = dir.display(),
                             );
