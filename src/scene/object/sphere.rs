@@ -2,7 +2,7 @@ use glam::Vec3A;
 use serde::{Deserialize, Serialize};
 
 use crate::scene::{DataRef, ObjectRef};
-use crate::tracer::{Clip, Manifold, Ray};
+use crate::tracer::{Clip, Face, Manifold, Ray};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Sphere {
@@ -42,12 +42,19 @@ impl Sphere {
 
         let position = ray.at(t);
         let normal = (position - translation) / self.radius;
+        let (normal, face) = if ray.direction.dot(normal) < 0.0 {
+            (normal, Face::Front)
+        } else {
+            (-normal, Face::Back)
+        };
         Some(Manifold {
             position,
             normal,
+            face,
             t,
-            object_ref,
-            mat_ref: self.material,
+            ray: *ray,
+            object_ref: Some(object_ref),
+            mat_ref: Some(self.material),
         })
     }
 }

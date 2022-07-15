@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::mem;
 
+use glam::Vec3A;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,10 @@ struct Collection<K: Eq + Hash, V> {
 }
 
 impl<K: Eq + Hash, V> Collection<K, V> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn get(&self, key: &K) -> Option<&V> {
         self.collection.get(key)
     }
@@ -28,6 +33,10 @@ impl<K: Eq + Hash, V> Collection<K, V> {
 
     pub fn iter(&self) -> impl Iterator<Item = &'_ V> {
         self.collection.values()
+    }
+
+    pub fn pairs(&self) -> impl Iterator<Item = (&'_ K, &'_ V)> {
+        self.collection.iter()
     }
 }
 
@@ -67,20 +76,51 @@ impl<K: Eq + Hash, V> Default for Collection<K, V> {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
     roots: Vec<ObjectRef>,
+    root_material: DataRef,
     objects: ObjectCollection,
     data: DataCollection,
 }
 
 impl Scene {
+    pub fn new() -> Self {
+        let roots = Vec::new();
+        let objects = ObjectCollection::new();
+        let mut data = DataCollection::new();
+        let root_mat = data.add(Data::new(Material::flat(Vec3A::ZERO)));
+        Self {
+            roots,
+            root_material: root_mat,
+            objects,
+            data,
+        }
+    }
+
     pub fn add_object(&mut self, object: Object) -> ObjectRef {
         self.objects.add(object)
     }
 
     pub fn add_data(&mut self, data: Data) -> DataRef {
         self.data.add(data)
+    }
+
+    pub fn root_material(&self) -> &Material {
+        self.get_data(self.root_material)
+            .as_material()
+            .expect("expected root material to be a material")
+    }
+
+    pub fn set_root_material(&mut self, data: DataRef) {
+        self.root_material = data;
+    }
+
+    pub fn find_by_tag(&self, tag: &str) -> Option<ObjectRef> {
+        self.objects
+            .pairs()
+            .find(|(_, object)| object.tag() == Some(tag))
+            .map(|(&object_ref, _)| object_ref)
     }
 
     pub fn get_object(&self, object: ObjectRef) -> &Object {
@@ -93,6 +133,12 @@ impl Scene {
 
     pub fn iter(&self) -> impl Iterator<Item = &'_ Object> {
         self.objects.iter()
+    }
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -1,5 +1,5 @@
 use glam::Vec3A;
-use rand::{Rng, SeedableRng};
+use rand::prelude::*;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
@@ -8,8 +8,8 @@ use crate::scene::{ObjectRef, Scene};
 mod buffer;
 mod ray;
 
-pub use self::buffer::{Buffer, Chunk, Chunks};
-pub use self::ray::{Clip, Manifold, Ray};
+pub use self::buffer::*;
+pub use self::ray::*;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Config {
@@ -77,16 +77,28 @@ impl Tracer {
             .collect::<Vec<_>>();
 
         chunks.into_par_iter().for_each(|chunk| {
-            self.render_samples_to_chunk(scene, camera, samples, chunk);
+            let mut chunk_state = ChunkState {
+                config: self.config,
+                rng: SmallRng::from_entropy(),
+            };
+            chunk_state.render_samples(scene, camera, samples, chunk);
         });
 
         buffer.inc_samples(samples);
 
         Status::Rendered
     }
+}
 
-    fn render_samples_to_chunk<'a>(
-        &self,
+#[derive(Debug)]
+pub struct ChunkState {
+    pub config: Config,
+    pub rng: SmallRng,
+}
+
+impl ChunkState {
+    fn render_samples<'a>(
+        &mut self,
         scene: &Scene,
         camera: ObjectRef,
         samples: usize,
@@ -147,24 +159,51 @@ impl Tracer {
         }
     }
 
-    fn sample(&self, ray: &Ray, scene: &Scene, bounce: usize) -> Vec3A {
+    fn sample(&mut self, ray: &Ray, scene: &Scene, bounce: usize) -> Vec3A {
         if bounce > self.config.max_bounces {
             return Vec3A::ZERO;
         }
 
         if let Some(manifold) = self.sample_one(ray, scene) {
+            let mat_ref = if let Some(mat_ref) = manifold.mat_ref {
+                mat_ref
+            } else {
+                return Vec3A::ZERO;
+            };
+
             let material = scene
-                .get_data(manifold.mat_ref)
+                .get_data(mat_ref)
                 .as_material()
                 .expect("expected material data");
 
-            return material.albedo;
-        }
+            let (ray, mut attenuation) = material.shade(&mut self.rng, &manifold);
 
-        Vec3A::ZERO
+            if let Some(ray) = ray {
+                let reflected = self.sample(&ray, scene, bounce + 1);
+                attenuation *= reflected;
+            }
+
+            attenuation
+        } else {
+            let material = scene.root_material();
+
+            let manifold = Manifold {
+                position: ray.at(self.config.clip_max),
+                normal: -ray.direction,
+                face: Face::Back,
+                t: self.config.clip_max,
+                ray: *ray,
+                object_ref: None,
+                mat_ref: None,
+            };
+
+            let (_, attenuation) = material.shade(&mut self.rng, &manifold);
+
+            attenuation
+        }
     }
 
-    fn sample_one(&self, ray: &Ray, scene: &Scene) -> Option<Manifold> {
+    fn sample_one(&mut self, ray: &Ray, scene: &Scene) -> Option<Manifold> {
         let mut result = None;
 
         let mut clip = Clip {

@@ -4,13 +4,21 @@ use glam::{Affine3A, Quat, Vec3A};
 
 use crate::scene::{DataRef, ObjectRef};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    Front,
+    Back,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Manifold {
     pub position: Vec3A,
     pub normal: Vec3A,
+    pub face: Face,
     pub t: f32,
-    pub object_ref: ObjectRef,
-    pub mat_ref: DataRef,
+    pub ray: Ray,
+    pub object_ref: Option<ObjectRef>,
+    pub mat_ref: Option<DataRef>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,13 +40,16 @@ impl Ray {
     };
 
     pub fn new(origin: Vec3A, direction: Vec3A) -> Self {
-        Self { origin, direction }
+        Self {
+            origin,
+            direction: direction.normalize(),
+        }
     }
 
     pub fn with_frustum(yfov: f32, xfov: f32, u: f32, v: f32) -> Self {
         let direction = Vec3A::NEG_Z;
-        let yrot = xfov * 0.5 * u;
-        let xrot = yfov * 0.5 * v;
+        let yrot = xfov * 0.5 * -u;
+        let xrot = yfov * 0.5 * -v;
         let rotation = Quat::from_euler(glam::EulerRot::YXZ, yrot, xrot, 0.0);
         let direction = rotation * direction;
         Self {
