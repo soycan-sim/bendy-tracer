@@ -73,6 +73,10 @@ impl Object {
         &self.inner
     }
 
+    pub fn inner_mut(&mut self) -> &mut ObjectKind {
+        &mut self.inner
+    }
+
     pub fn tag(&self) -> Option<&str> {
         self.tag.as_deref()
     }
@@ -83,6 +87,13 @@ impl Object {
 
     pub fn as_camera(&self) -> Option<&Camera> {
         match self.inner() {
+            ObjectKind::Camera(camera) => Some(camera),
+            _ => None,
+        }
+    }
+
+    pub fn as_camera_mut(&mut self) -> Option<&mut Camera> {
+        match self.inner_mut() {
             ObjectKind::Camera(camera) => Some(camera),
             _ => None,
         }

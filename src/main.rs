@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Error};
-use bendy_tracer::scene::{Camera, Data, Material, Object, Scene, Sphere};
+use bendy_tracer::scene::{Camera, Data, Material, Object, Scene, Sphere, Update, UpdateQueue};
 use bendy_tracer::tracer::{Buffer, Status, Tracer};
 use clap::Parser;
 use glam::{Affine3A, Quat, Vec3, Vec3A};
@@ -104,7 +104,15 @@ fn main() -> Result<(), Error> {
         scene
     };
 
-    let camera = scene.find_by_tag("camera").unwrap();
+    let mut camera = scene.find_by_tag("camera").unwrap();
+
+    let aspect_ratio = args.width as f32 / args.height as f32;
+
+    let mut update_queue = UpdateQueue::new();
+    update_queue.push(Update::object(camera, move |object, _| {
+        object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
+    }));
+    update_queue.commit(&mut scene);
 
     let tracer = Tracer::new();
 
@@ -233,11 +241,19 @@ fn main() -> Result<(), Error> {
                     scene = serde_json::from_reader(&mut reader)?;
                     buffer.clear();
 
+                    camera = scene.find_by_tag("camera").unwrap();
+
+                    update_queue.push(Update::object(camera, move |object, _| {
+                        object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
+                    }));
+
                     writeln!(io::stderr(), "loaded scene from {}", path.display())?;
                 }
                 _ => {}
             }
         }
+
+        update_queue.commit(&mut scene);
 
         let samples = buffer.samples();
         let max_samples = buffer.max_samples();
