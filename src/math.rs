@@ -119,13 +119,15 @@ impl UnitDisk {
 impl Distribution<Vec3> for UnitDisk {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
         let full_circle = Uniform::new_inclusive(0.0, TAU);
+        let radius = Uniform::new_inclusive(0.0, 1.0);
 
         let angle = full_circle.sample(rng);
+        let r = radius.sample(rng);
 
         let x = angle.cos();
         let y = angle.sin();
 
-        self.x_axis * x + self.y_axis * y
+        (self.x_axis * x + self.y_axis * y) * r
     }
 }
 
