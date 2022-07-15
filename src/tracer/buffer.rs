@@ -6,6 +6,7 @@ const BLACK_ALPHA_ONE: Rgba<f32> = Rgba([0.0, 0.0, 0.0, 1.0]);
 
 #[derive(Debug, Clone)]
 pub struct Buffer {
+    gamma: f32,
     samples: usize,
     max_samples: usize,
     weight: f32,
@@ -14,11 +15,12 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    pub fn new(width: u32, height: u32, max_samples: usize) -> Self {
+    pub fn new(width: u32, height: u32, gamma: f32, max_samples: usize) -> Self {
         let samples = 0;
         let weight = (max_samples as f32).recip();
         let buffer = Rgba32FImage::from_pixel(width, height, BLACK_ALPHA_ONE);
         Self {
+            gamma,
             samples,
             max_samples,
             weight,
@@ -86,11 +88,19 @@ impl Buffer {
         let samples_recip = (self.samples as f32).recip();
         let weight = samples_recip * self.max_samples as f32;
 
+        let one_over_gamma = self.gamma.recip();
+
         for (target, source) in preview.pixels_mut().zip(self.buffer.pixels()) {
-            let r = (source.0[0] * weight * 255.0) as u8;
-            let g = (source.0[1] * weight * 255.0) as u8;
-            let b = (source.0[2] * weight * 255.0) as u8;
-            let a = (source.0[3] * 255.0) as u8;
+            let r = (source.0[0] * weight).powf(one_over_gamma).clamp(0.0, 1.0);
+            let g = (source.0[1] * weight).powf(one_over_gamma).clamp(0.0, 1.0);
+            let b = (source.0[2] * weight).powf(one_over_gamma).clamp(0.0, 1.0);
+            let a = source.0[3];
+
+            let r = (r * 255.0) as u8;
+            let g = (g * 255.0) as u8;
+            let b = (b * 255.0) as u8;
+            let a = (a * 255.0) as u8;
+
             *target = Rgba([r, g, b, a]);
         }
 

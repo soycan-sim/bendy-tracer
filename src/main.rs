@@ -25,8 +25,8 @@ struct Cli {
     #[clap(long, value_parser, default_value_t = 32)]
     max_samples: usize,
 
-    #[clap(long, value_parser, default_value_os_t = PathBuf::from("render.png"))]
-    path: PathBuf,
+    #[clap(long, value_parser, default_value_t = 2.0)]
+    gamma: f32,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -54,11 +54,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Object::new(Sphere::new(mat_red, 1.0)).with_translation(Vec3A::new(0.0, 0.0, -8.0)),
     );
 
-    let mut buffer = Buffer::new(args.width, args.height, args.max_samples);
+        
 
     let tracer = Tracer::new();
 
-    let mut update_queue = UpdateQueue::new();
+    let mut buffer = Buffer::new(args.width, args.height, args.gamma, args.max_samples);
 
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
