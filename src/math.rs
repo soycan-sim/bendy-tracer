@@ -47,6 +47,7 @@ macro_rules! impl_vec3_ext {
 impl_vec3_ext!(Vec3);
 impl_vec3_ext!(Vec3A);
 
+#[derive(Debug, Clone, Copy)]
 pub struct UnitSphere;
 
 impl Distribution<Vec3> for UnitSphere {
@@ -71,6 +72,7 @@ impl Distribution<Vec3A> for UnitSphere {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct UnitHemisphere {
     normal: Vec3,
 }
@@ -95,6 +97,39 @@ impl Distribution<Vec3> for UnitHemisphere {
 }
 
 impl Distribution<Vec3A> for UnitHemisphere {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3A {
+        <Self as Distribution<Vec3>>::sample(self, rng).into()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct UnitDisk {
+    x_axis: Vec3,
+    y_axis: Vec3,
+}
+
+impl UnitDisk {
+    pub fn new(normal: Vec3) -> Self {
+        let normal = normal.normalize();
+        let (x_axis, y_axis) = normal.any_orthonormal_pair();
+        Self { x_axis, y_axis }
+    }
+}
+
+impl Distribution<Vec3> for UnitDisk {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
+        let full_circle = Uniform::new_inclusive(0.0, TAU);
+
+        let angle = full_circle.sample(rng);
+
+        let x = angle.cos();
+        let y = angle.sin();
+
+        self.x_axis * x + self.y_axis * y
+    }
+}
+
+impl Distribution<Vec3A> for UnitDisk {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3A {
         <Self as Distribution<Vec3>>::sample(self, rng).into()
     }

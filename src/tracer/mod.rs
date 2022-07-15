@@ -1,8 +1,9 @@
-use glam::Vec3A;
+use glam::{Vec3, Vec3A};
 use rand::prelude::*;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
+use crate::math::UnitDisk;
 use crate::scene::{ObjectRef, Scene};
 
 mod buffer;
@@ -127,13 +128,19 @@ impl ChunkState {
             rand::distributions::Uniform::from(min..max)
         };
 
+        let scatter_defocus = UnitDisk::new(Vec3::NEG_Z);
+
         let scatter = (0..samples)
             .map(|_| {
-                let u = rng.sample(scatter_u);
-                let v = rng.sample(scatter_v);
+                let u = rng.sample(&scatter_u);
+                let v = rng.sample(&scatter_v);
                 (u, v)
             })
             .collect::<Vec<_>>();
+
+        let defocus = (0..samples)
+            .map(|_| rng.sample(&scatter_defocus))
+            .collect::<Vec<Vec3A>>();
 
         let mut chunk = chunk;
 
@@ -145,11 +152,26 @@ impl ChunkState {
 
                 let mut sample = Vec3A::ZERO;
 
-                for &(u_offset, v_offset) in &scatter {
+                for (&(u_offset, v_offset), &defocus) in scatter.iter().zip(&defocus) {
                     let u = u + u_offset;
                     let v = v + v_offset;
 
-                    let ray = camera_obj.transform() * Ray::with_frustum(yfov, xfov, u, v);
+                    let mut ray = Ray::with_frustum(yfov, xfov, u, v);
+                    if let Some(focus) = camera.focus {
+                        let aperture = 0.5 * camera.focal_length / camera.fstop;
+                        let defocus_offset = camera_obj
+                            .transform()
+                            .transform_vector3a(defocus * aperture);
+
+                        let frac_f_z = focus / ray.direction.z.abs();
+
+                        ray = camera_obj.transform() * ray;
+
+                        ray.origin += defocus_offset;
+                        ray.direction = (ray.direction * frac_f_z - defocus_offset).normalize();
+                    } else {
+                        ray = camera_obj.transform() * ray;
+                    }
 
                     sample += self.sample(&ray, scene, 0);
                 }
