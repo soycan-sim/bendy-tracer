@@ -20,6 +20,7 @@ pub struct ObjectRef(pub(super) u64);
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Object {
     pub(super) object_ref: Option<ObjectRef>,
+    tag: Option<String>,
     transform: Transform,
     inner: ObjectKind,
     children: Option<Vec<ObjectRef>>,
@@ -32,6 +33,7 @@ impl Object {
     {
         Self {
             object_ref: None,
+            tag: None,
             transform: Default::default(),
             inner: ObjectKind::from(object),
             children: None,
@@ -40,6 +42,13 @@ impl Object {
 
     pub fn empty() -> Self {
         Self::new(())
+    }
+
+    pub fn with_tag(self, tag: String) -> Self {
+        Self {
+            tag: Some(tag),
+            ..self
+        }
     }
 
     pub fn with_transform(self, affine: Affine3A) -> Self {
@@ -62,6 +71,10 @@ impl Object {
 
     pub fn inner(&self) -> &ObjectKind {
         &self.inner
+    }
+
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
     }
 
     pub fn transform(&self) -> &Affine3A {
