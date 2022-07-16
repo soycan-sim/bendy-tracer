@@ -3,7 +3,6 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Error};
@@ -12,9 +11,7 @@ use bendy_tracer::scene::{Camera, Data, Material, Object, Scene, Sphere, Update,
 use bendy_tracer::tracer::{Buffer, Status, Tracer};
 use clap::Parser;
 use glam::{Affine3A, Quat, Vec3, Vec3A};
-use sdl2::event::Event;
-use sdl2::keyboard;
-use sdl2::pixels::PixelFormatEnum;
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
 
 const SAMPLES_STEP: usize = 8;
 const SAMPLES_BIG_STEP: usize = 64;
@@ -27,10 +24,10 @@ const DEFAULT_SCREENSHOT: &str = "render.png";
 #[clap(author, version, about)]
 struct Cli {
     #[clap(long, value_parser, default_value_t = 768)]
-    width: u32,
+    width: usize,
 
     #[clap(long, value_parser, default_value_t = 512)]
-    height: u32,
+    height: usize,
 
     #[clap(long, value_parser, default_value_t = 64)]
     max_samples: usize,
@@ -45,18 +42,21 @@ struct Cli {
 fn main() -> Result<(), Error> {
     let args = Cli::parse();
 
-    let sdl_context = sdl2::init().unwrap();
-    let video_subsystem = sdl_context.video().unwrap();
+    let mut window_width = args.width;
+    let mut window_height = args.height;
+    let mut window = Window::new(
+        "bendy tracer",
+        window_width,
+        window_height,
+        WindowOptions {
+            resize: true,
+            ..Default::default()
+        },
+    )?;
+    // limit to 120fps
+    window.limit_update_rate(Some(Duration::from_micros(8333)));
 
-    let window = video_subsystem
-        .window("bendy tracer", args.width, args.height)
-        .position_centered()
-        .build()
-        .unwrap();
-
-    let mut canvas = window.into_canvas().build().unwrap();
-    canvas.clear();
-    canvas.present();
+    let mut window_buffer = vec![0_u32; window_width * window_height];
 
     let mut scene = if let Some(path) = &args.scene {
         let file = File::open(path)?;
@@ -111,30 +111,23 @@ fn main() -> Result<(), Error> {
 
     let mut camera = scene.find_by_tag("camera").unwrap();
 
-    let aspect_ratio = args.width as f32 / args.height as f32;
-
     let mut update_queue = UpdateQueue::new();
     update_queue.push(Update::object(camera, move |object, _| {
+        let aspect_ratio = window_width as f32 / window_height as f32;
         object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
     }));
     update_queue.commit(&mut scene);
 
     let tracer = Tracer::new();
 
-    let mut buffer = Buffer::new(args.width, args.height);
+    let mut buffer = Buffer::new(window_width, window_height);
     let mut max_samples = args.max_samples;
 
-    let texture_creator = canvas.texture_creator();
-    let mut texture = texture_creator
-        .create_texture_streaming(PixelFormatEnum::RGBA32, args.width, args.height)
-        .unwrap();
-
-    let mut event_pump = sdl_context.event_pump().unwrap();
     let mut start = None;
     let mut end = None;
     let mut prev_frame;
 
-    'main: loop {
+    while window.is_open() {
         prev_frame = Instant::now();
 
         let samples = if buffer.samples() < max_samples { 1 } else { 0 };
@@ -146,11 +139,10 @@ fn main() -> Result<(), Error> {
 
         if status == Status::InProgress {
             let preview = buffer.preview();
-            let stride = preview.sample_layout().height_stride;
 
-            texture.update(None, preview, stride).unwrap();
-
-            canvas.copy(&texture, None, None).unwrap();
+            for (target, source) in window_buffer.iter_mut().zip(preview.pixels()) {
+                *target = u32::from_be_bytes([0, source.0[0], source.0[1], source.0[2]]);
+            }
 
             if start.is_none() || end.is_some() {
                 start = Some(prev_frame);
@@ -159,114 +151,98 @@ fn main() -> Result<(), Error> {
         } else if end.is_none() {
             end = Some(this_frame);
         }
+        if window.is_key_pressed(Key::Q, KeyRepeat::No) {
+            let step = if window.is_key_down(Key::LeftShift) {
+                SAMPLES_VERY_BIG_STEP
+            } else if window.is_key_down(Key::LeftCtrl) {
+                SAMPLES_BIG_STEP
+            } else {
+                SAMPLES_STEP
+            };
+            max_samples = max_samples.saturating_sub(step).max(1);
+        }
+        if window.is_key_pressed(Key::E, KeyRepeat::No) {
+            let step = if window.is_key_down(Key::LeftShift) {
+                SAMPLES_VERY_BIG_STEP
+            } else if window.is_key_down(Key::LeftCtrl) {
+                SAMPLES_BIG_STEP
+            } else {
+                SAMPLES_STEP
+            };
+            max_samples = if max_samples == 1 {
+                step
+            } else {
+                max_samples + step
+            };
+        }
+        if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::P, KeyRepeat::No) {
+            let path = &args.screenshot;
+            let path = if path.extension().is_none() {
+                Cow::from(path.with_file_name(DEFAULT_SCREENSHOT))
+            } else {
+                Cow::from(path)
+            };
 
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. } => break 'main,
-                Event::KeyDown {
-                    keycode: Some(keyboard::Keycode::Q),
-                    keymod,
-                    ..
-                } => {
-                    let step = if keymod.contains(keyboard::Mod::LSHIFTMOD) {
-                        SAMPLES_VERY_BIG_STEP
-                    } else if keymod.contains(keyboard::Mod::LCTRLMOD) {
-                        SAMPLES_BIG_STEP
-                    } else {
-                        SAMPLES_STEP
-                    };
-                    max_samples = max_samples.saturating_sub(step).max(1);
+            if let Some(dir) = path.parent() {
+                if dir.exists() {
+                    ensure!(
+                        dir.is_dir(),
+                        "{dir} is not a directory",
+                        dir = dir.display(),
+                    );
+                } else {
+                    fs::create_dir_all(dir)?;
                 }
-                Event::KeyDown {
-                    keycode: Some(keyboard::Keycode::E),
-                    keymod,
-                    ..
-                } => {
-                    let step = if keymod.contains(keyboard::Mod::LSHIFTMOD) {
-                        SAMPLES_VERY_BIG_STEP
-                    } else if keymod.contains(keyboard::Mod::LCTRLMOD) {
-                        SAMPLES_BIG_STEP
-                    } else {
-                        SAMPLES_STEP
-                    };
-                    max_samples = if max_samples == 1 {
-                        step
-                    } else {
-                        max_samples + step
-                    };
-                }
-                Event::KeyDown {
-                    keycode: Some(keyboard::Keycode::P),
-                    repeat: false,
-                    keymod,
-                    ..
-                } if keymod.contains(keyboard::Mod::LCTRLMOD) => {
-                    let path = &args.screenshot;
-                    let path = if path.extension().is_none() {
-                        Cow::from(path.with_file_name(DEFAULT_SCREENSHOT))
-                    } else {
-                        Cow::from(path)
-                    };
-
-                    if let Some(dir) = path.parent() {
-                        if dir.exists() {
-                            ensure!(
-                                dir.is_dir(),
-                                "{dir} is not a directory",
-                                dir = dir.display(),
-                            );
-                        } else {
-                            fs::create_dir_all(dir)?;
-                        }
-                    }
-
-                    buffer.preview_or_update().save(&path)?;
-
-                    writeln!(io::stderr(), "saved screenshot to {}", path.display())?;
-                }
-                Event::KeyDown {
-                    keycode: Some(keyboard::Keycode::K),
-                    repeat: false,
-                    keymod,
-                    ..
-                } if keymod.contains(keyboard::Mod::LCTRLMOD) => {
-                    let path = args
-                        .scene
-                        .as_deref()
-                        .unwrap_or_else(|| Path::new(DEFAULT_SCENE));
-
-                    let file = File::create(path)?;
-                    let mut writer = BufWriter::new(file);
-                    serde_json::to_writer_pretty(&mut writer, &scene)?;
-
-                    writeln!(io::stderr(), "saved scene to {}", path.display())?;
-                }
-                Event::KeyDown {
-                    keycode: Some(keyboard::Keycode::L),
-                    repeat: false,
-                    keymod,
-                    ..
-                } if keymod.contains(keyboard::Mod::LCTRLMOD) => {
-                    let path = args
-                        .scene
-                        .as_deref()
-                        .unwrap_or_else(|| Path::new(DEFAULT_SCENE));
-
-                    let file = File::open(path)?;
-                    let mut reader = BufReader::new(file);
-                    scene = serde_json::from_reader(&mut reader)?;
-                    buffer.clear();
-
-                    camera = scene.find_by_tag("camera").unwrap();
-
-                    update_queue.push(Update::object(camera, move |object, _| {
-                        object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
-                    }));
-
-                    writeln!(io::stderr(), "loaded scene from {}", path.display())?;
-                }
-                _ => {}
             }
+
+            buffer.preview_or_update().save(&path)?;
+
+            writeln!(io::stderr(), "saved screenshot to {}", path.display())?;
+        }
+        if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::K, KeyRepeat::No) {
+            let path = args
+                .scene
+                .as_deref()
+                .unwrap_or_else(|| Path::new(DEFAULT_SCENE));
+
+            let file = File::create(path)?;
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, &scene)?;
+
+            writeln!(io::stderr(), "saved scene to {}", path.display())?;
+        }
+        if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::L, KeyRepeat::No) {
+            let path = args
+                .scene
+                .as_deref()
+                .unwrap_or_else(|| Path::new(DEFAULT_SCENE));
+
+            let file = File::open(path)?;
+            let mut reader = BufReader::new(file);
+            scene = serde_json::from_reader(&mut reader)?;
+            buffer.clear();
+
+            camera = scene.find_by_tag("camera").unwrap();
+
+            update_queue.push(Update::object(camera, move |object, _| {
+                let aspect_ratio = window_width as f32 / window_height as f32;
+                object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
+            }));
+
+            writeln!(io::stderr(), "loaded scene from {}", path.display())?;
+        }
+
+        let window_size = window.get_size();
+        if window_size != (window_width, window_height) {
+            window_width = window_size.0;
+            window_height = window_size.1;
+            buffer.resize(window_width, window_height);
+            window_buffer.resize(window_width * window_height, 0);
+
+            update_queue.push(Update::object(camera, move |object, _| {
+                let aspect_ratio = window_width as f32 / window_height as f32;
+                object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
+            }));
         }
 
         update_queue.commit(&mut scene);
@@ -286,10 +262,10 @@ fn main() -> Result<(), Error> {
             let millis = total.as_millis() % 1_000;
             write!(&mut title, "; total t: {seconds}s {millis}ms")?;
         }
-        canvas.window_mut().set_title(&title).unwrap();
 
-        canvas.present();
-        thread::sleep(Duration::new(0, 1_000_000));
+        window.set_title(&title);
+
+        window.update_with_buffer(&window_buffer, window_width, window_height)?;
     }
 
     Ok(())
