@@ -1,11 +1,13 @@
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Error};
+use bendy_tracer::color::LinearRgb;
 use bendy_tracer::scene::{Camera, Data, Material, Object, Scene, Sphere, Update, UpdateQueue};
 use bendy_tracer::tracer::{Buffer, Status, Tracer};
 use clap::Parser;
@@ -32,9 +34,6 @@ struct Cli {
 
     #[clap(long, value_parser, default_value_t = 64)]
     max_samples: usize,
-
-    #[clap(long, value_parser, default_value_t = 2.0)]
-    gamma: f32,
 
     #[clap(long, value_parser, default_value_os_t = PathBuf::from("screenshots/render.png"))]
     screenshot: PathBuf,
@@ -70,10 +69,16 @@ fn main() -> Result<(), Error> {
     } else {
         let mut scene = Scene::default();
 
-        let mat_root = scene.add_data(Data::new(Material::emissive(Vec3A::ONE, 0.1)));
-        let mat_light = scene.add_data(Data::new(Material::emissive(Vec3A::ONE, 10.0)));
-        let mat_red = scene.add_data(Data::new(Material::diffuse(Vec3A::new(0.7, 0.1, 0.1), 0.5)));
-        let mat_blue = scene.add_data(Data::new(Material::diffuse(Vec3A::new(0.2, 0.2, 0.5), 0.8)));
+        let mat_root = scene.add_data(Data::new(Material::emissive(LinearRgb::WHITE, 0.1)));
+        let mat_light = scene.add_data(Data::new(Material::emissive(LinearRgb::WHITE, 10.0)));
+        let mat_red = scene.add_data(Data::new(Material::diffuse(
+            LinearRgb::new(0.7, 0.1, 0.1),
+            0.5,
+        )));
+        let mat_blue = scene.add_data(Data::new(Material::diffuse(
+            LinearRgb::new(0.2, 0.2, 0.5),
+            0.8,
+        )));
 
         scene.set_root_material(mat_root);
 
@@ -116,7 +121,8 @@ fn main() -> Result<(), Error> {
 
     let tracer = Tracer::new();
 
-    let mut buffer = Buffer::new(args.width, args.height, args.gamma, args.max_samples);
+    let mut buffer = Buffer::new(args.width, args.height);
+    let mut max_samples = args.max_samples;
 
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
@@ -124,21 +130,35 @@ fn main() -> Result<(), Error> {
         .unwrap();
 
     let mut event_pump = sdl_context.event_pump().unwrap();
-    let mut prev_frame = Instant::now();
+    let mut start = None;
+    let mut end = None;
+    let mut prev_frame;
 
     'main: loop {
-        if tracer.render_samples(&scene, camera, 1, &mut buffer) == Status::Rendered {
+        prev_frame = Instant::now();
+
+        let samples = if buffer.samples() < max_samples { 1 } else { 0 };
+        let status = tracer.render(&scene, camera, samples, &mut buffer);
+
+        // delta time of the render, not the entire loop
+        let this_frame = Instant::now();
+        let delta = this_frame - prev_frame;
+
+        if status == Status::InProgress {
             let preview = buffer.preview();
             let stride = preview.sample_layout().height_stride;
 
             texture.update(None, preview, stride).unwrap();
 
             canvas.copy(&texture, None, None).unwrap();
-        }
 
-        // delta time of the render, not the entire loop
-        let this_frame = Instant::now();
-        let delta = this_frame - prev_frame;
+            if start.is_none() || end.is_some() {
+                start = Some(prev_frame);
+                end = None;
+            }
+        } else if end.is_none() {
+            end = Some(this_frame);
+        }
 
         for event in event_pump.poll_iter() {
             match event {
@@ -155,9 +175,7 @@ fn main() -> Result<(), Error> {
                     } else {
                         SAMPLES_STEP
                     };
-                    let max_samples = buffer.max_samples().saturating_sub(step);
-                    buffer.set_max_samples(max_samples.max(1));
-                    buffer.clear();
+                    max_samples = max_samples.saturating_sub(step).max(1);
                 }
                 Event::KeyDown {
                     keycode: Some(keyboard::Keycode::E),
@@ -171,13 +189,11 @@ fn main() -> Result<(), Error> {
                     } else {
                         SAMPLES_STEP
                     };
-                    let max_samples = if buffer.max_samples() == 1 {
+                    max_samples = if max_samples == 1 {
                         step
                     } else {
-                        buffer.max_samples() + step
+                        max_samples + step
                     };
-                    buffer.set_max_samples(max_samples);
-                    buffer.clear();
                 }
                 Event::KeyDown {
                     keycode: Some(keyboard::Keycode::P),
@@ -256,22 +272,24 @@ fn main() -> Result<(), Error> {
         update_queue.commit(&mut scene);
 
         let samples = buffer.samples();
-        let max_samples = buffer.max_samples();
         let seconds = delta.as_secs();
         let millis = delta.as_millis() % 1_000;
-        let title = if seconds == 0 {
-            format!("bendy tracer; samples: {samples}/{max_samples}; delta t: {millis}ms")
+        let mut title = format!("bendy tracer; samples: {samples}/{max_samples}");
+        if seconds == 0 {
+            write!(&mut title, "; delta t: {millis}ms")?;
         } else {
-            format!(
-                "bendy tracer; samples: {samples}/{max_samples}; delta t: {seconds}s {millis}ms"
-            )
-        };
+            write!(&mut title, "; delta t: {seconds}s {millis}ms")?;
+        }
+        if let (Some(start), Some(end)) = (start, end) {
+            let total = end - start;
+            let seconds = total.as_secs();
+            let millis = total.as_millis() % 1_000;
+            write!(&mut title, "; total t: {seconds}s {millis}ms")?;
+        }
         canvas.window_mut().set_title(&title).unwrap();
 
         canvas.present();
         thread::sleep(Duration::new(0, 1_000_000));
-
-        prev_frame = Instant::now();
     }
 
     Ok(())

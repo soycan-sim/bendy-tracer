@@ -2,43 +2,44 @@ use glam::Vec3A;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::color::LinearRgb;
 use crate::math::{UnitHemisphere, Vec3Ext};
 use crate::tracer::{Face, Manifold, Ray};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Material {
     Flat {
-        albedo: Vec3A,
+        albedo: LinearRgb,
     },
     Diffuse {
-        albedo: Vec3A,
+        albedo: LinearRgb,
         roughness: f32,
     },
     Metallic {
-        albedo: Vec3A,
+        albedo: LinearRgb,
         roughness: f32,
     },
     Glass {
-        albedo: Vec3A,
+        albedo: LinearRgb,
         roughness: f32,
         ior: f32,
     },
     Emissive {
-        albedo: Vec3A,
+        albedo: LinearRgb,
         intensity: f32,
     },
 }
 
 impl Material {
-    pub const fn flat(albedo: Vec3A) -> Self {
+    pub const fn flat(albedo: LinearRgb) -> Self {
         Self::Flat { albedo }
     }
 
-    pub const fn diffuse(albedo: Vec3A, roughness: f32) -> Self {
+    pub const fn diffuse(albedo: LinearRgb, roughness: f32) -> Self {
         Self::Diffuse { albedo, roughness }
     }
 
-    pub const fn glass(albedo: Vec3A, roughness: f32, ior: f32) -> Self {
+    pub const fn glass(albedo: LinearRgb, roughness: f32, ior: f32) -> Self {
         Self::Glass {
             albedo,
             roughness,
@@ -46,11 +47,15 @@ impl Material {
         }
     }
 
-    pub const fn emissive(albedo: Vec3A, intensity: f32) -> Self {
+    pub const fn emissive(albedo: LinearRgb, intensity: f32) -> Self {
         Self::Emissive { albedo, intensity }
     }
 
-    pub fn shade<R: Rng + ?Sized>(&self, rng: &mut R, manifold: &Manifold) -> (Option<Ray>, Vec3A) {
+    pub fn shade<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        manifold: &Manifold,
+    ) -> (Option<Ray>, LinearRgb) {
         match *self {
             Material::Flat { albedo } => (None, albedo),
             Material::Diffuse { albedo, roughness } => {

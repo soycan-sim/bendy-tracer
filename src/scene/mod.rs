@@ -2,12 +2,13 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::mem;
 
-use glam::Vec3A;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 mod data;
 mod object;
+
+use crate::color::LinearRgb;
 
 pub use self::data::*;
 pub use self::object::*;
@@ -89,7 +90,7 @@ impl Scene {
         let roots = Vec::new();
         let objects = ObjectCollection::new();
         let mut data = DataCollection::new();
-        let root_mat = data.add(Data::new(Material::flat(Vec3A::ZERO)));
+        let root_mat = data.add(Data::new(Material::flat(LinearRgb::BLACK)));
         Self {
             roots,
             root_material: root_mat,

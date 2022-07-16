@@ -3,6 +3,7 @@ use rand::prelude::*;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
+use crate::color::LinearRgb;
 use crate::math::UnitDisk;
 use crate::scene::{ObjectRef, Scene};
 
@@ -39,8 +40,8 @@ impl Default for Config {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    BufferFull,
-    Rendered,
+    Done,
+    InProgress,
 }
 
 #[derive(Debug, Default)]
@@ -57,20 +58,15 @@ impl Tracer {
         Self { config }
     }
 
-    pub fn render(&self, scene: &Scene, camera: ObjectRef, buffer: &mut Buffer) -> Status {
-        self.render_samples(scene, camera, buffer.max_samples(), buffer)
-    }
-
-    pub fn render_samples(
+    pub fn render(
         &self,
         scene: &Scene,
         camera: ObjectRef,
         samples: usize,
         buffer: &mut Buffer,
     ) -> Status {
-        let samples = samples.min(buffer.max_samples() - buffer.samples());
         if samples == 0 {
-            return Status::BufferFull;
+            return Status::Done;
         }
 
         let chunks = buffer
@@ -87,7 +83,7 @@ impl Tracer {
 
         buffer.inc_samples(samples);
 
-        Status::Rendered
+        Status::InProgress
     }
 }
 
@@ -150,7 +146,7 @@ impl ChunkState {
             for x in chunk.range_x() {
                 let u = x as f32 * pixel_width - 1.0;
 
-                let mut sample = Vec3A::ZERO;
+                let mut sample = LinearRgb::BLACK;
 
                 for (&(u_offset, v_offset), &defocus) in scatter.iter().zip(&defocus) {
                     let u = u + u_offset;
@@ -176,21 +172,21 @@ impl ChunkState {
                     sample += self.sample(&ray, scene, 0);
                 }
 
-                chunk.add_samples(x, y, sample.into());
+                chunk.add_samples(x, y, sample);
             }
         }
     }
 
-    fn sample(&mut self, ray: &Ray, scene: &Scene, bounce: usize) -> Vec3A {
+    fn sample(&mut self, ray: &Ray, scene: &Scene, bounce: usize) -> LinearRgb {
         if bounce > self.config.max_bounces {
-            return Vec3A::ZERO;
+            return LinearRgb::BLACK;
         }
 
         if let Some(manifold) = self.sample_one(ray, scene) {
             let mat_ref = if let Some(mat_ref) = manifold.mat_ref {
                 mat_ref
             } else {
-                return Vec3A::ZERO;
+                return LinearRgb::BLACK;
             };
 
             let material = scene
