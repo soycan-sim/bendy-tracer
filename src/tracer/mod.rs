@@ -18,8 +18,8 @@ pub struct Config {
     pub max_bounces: usize,
     pub clip_min: f32,
     pub clip_max: f32,
-    pub chunks_x: u32,
-    pub chunks_y: u32,
+    pub chunks_x: usize,
+    pub chunks_y: usize,
 }
 
 impl Config {

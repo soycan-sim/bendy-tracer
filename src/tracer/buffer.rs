@@ -1,3 +1,4 @@
+use std::mem;
 use std::ops::{Deref, Range};
 
 use image::{Rgba, Rgba32FImage, RgbaImage};
@@ -14,14 +15,26 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: usize, height: usize) -> Self {
         let samples = 0;
-        let buffer = Rgba32FImage::from_pixel(width, height, BLACK_ALPHA_ONE);
+        let buffer = Rgba32FImage::from_pixel(width as _, height as _, BLACK_ALPHA_ONE);
         Self {
             samples,
             buffer,
             preview: None,
         }
+    }
+
+    pub fn width(&self) -> usize {
+        self.buffer.width() as _
+    }
+
+    pub fn height(&self) -> usize {
+        self.buffer.height() as _
+    }
+
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.width(), self.height())
     }
 
     pub fn samples(&self) -> usize {
@@ -49,16 +62,29 @@ impl Buffer {
         self.samples = 0;
     }
 
-    pub fn chunks(&mut self, chunks_x: u32, chunks_y: u32) -> Chunks {
-        let chunk_width = if self.buffer.width() % chunks_x == 0 {
-            self.buffer.width() / chunks_x
+    pub fn resize(&mut self, width: usize, height: usize) {
+        let mut buffer = Rgba32FImage::new(0, 0);
+        mem::swap(&mut buffer, &mut self.buffer);
+
+        let mut buffer = buffer.into_raw();
+        buffer.resize(4 * width * height, 0.0);
+
+        self.buffer = Rgba32FImage::from_raw(width as _, height as _, buffer).unwrap();
+        self.preview = None;
+
+        self.clear();
+    }
+
+    pub fn chunks(&mut self, chunks_x: usize, chunks_y: usize) -> Chunks {
+        let chunk_width = if self.width() % chunks_x == 0 {
+            self.width() / chunks_x
         } else {
-            self.buffer.width() / chunks_x + 1
+            self.width() / chunks_x + 1
         };
-        let chunk_height = if self.buffer.height() % chunks_y == 0 {
-            self.buffer.height() / chunks_y
+        let chunk_height = if self.height() % chunks_y == 0 {
+            self.height() / chunks_y
         } else {
-            self.buffer.height() / chunks_y + 1
+            self.height() / chunks_y + 1
         };
 
         Chunks::new(self, chunk_width, chunk_height)
@@ -106,8 +132,8 @@ impl Buffer {
         self.samples += samples;
     }
 
-    pub(super) fn add_samples(&mut self, x: u32, y: u32, pixel: LinearRgb) {
-        let Rgba([r, g, b, _]) = self.buffer.get_pixel_mut(x, y);
+    pub(super) fn add_samples(&mut self, x: usize, y: usize, pixel: LinearRgb) {
+        let Rgba([r, g, b, _]) = self.buffer.get_pixel_mut(x as _, y as _);
         *r += pixel.r;
         *g += pixel.g;
         *b += pixel.b;
@@ -129,33 +155,33 @@ impl AsRef<Rgba32FImage> for Buffer {
 }
 
 pub struct Chunk<'a> {
-    min_x: u32,
-    min_y: u32,
-    max_x: u32,
-    max_y: u32,
+    min_x: usize,
+    min_y: usize,
+    max_x: usize,
+    max_y: usize,
     buffer: &'a mut Buffer,
 }
 
 impl<'a> Chunk<'a> {
-    pub fn chunk_width(&self) -> u32 {
+    pub fn chunk_width(&self) -> usize {
         self.max_x - self.min_x
     }
 
-    pub fn chunk_height(&self) -> u32 {
+    pub fn chunk_height(&self) -> usize {
         self.max_y - self.min_y
     }
 
-    pub fn range_x(&self) -> Range<u32> {
+    pub fn range_x(&self) -> Range<usize> {
         self.min_x..self.max_x
     }
 
-    pub fn range_y(&self) -> Range<u32> {
+    pub fn range_y(&self) -> Range<usize> {
         self.min_y..self.max_y
     }
 
     // SAFETY: this function must ensure that pixels outside of its bounds are never modified
     //         the bounds are inclusive on the lower bound and exclusive on the upper bound
-    pub fn add_samples(&mut self, x: u32, y: u32, pixel: LinearRgb) {
+    pub fn add_samples(&mut self, x: usize, y: usize, pixel: LinearRgb) {
         assert!(
             x >= self.min_x && x < self.max_x && y >= self.min_y && y < self.max_y,
             "index ({x}, {y}) out of bounds ({min_x}, {min_y}; {max_x}, {max_y})",
@@ -178,15 +204,15 @@ impl<'a> Deref for Chunk<'a> {
 
 pub struct Chunks<'a> {
     done: bool,
-    offset_x: u32,
-    offset_y: u32,
-    chunk_width: u32,
-    chunk_height: u32,
+    offset_x: usize,
+    offset_y: usize,
+    chunk_width: usize,
+    chunk_height: usize,
     buffer: &'a mut Buffer,
 }
 
 impl<'a> Chunks<'a> {
-    pub fn new(buffer: &'a mut Buffer, chunk_width: u32, chunk_height: u32) -> Self {
+    pub fn new(buffer: &'a mut Buffer, chunk_width: usize, chunk_height: usize) -> Self {
         Self {
             done: false,
             offset_x: 0,
