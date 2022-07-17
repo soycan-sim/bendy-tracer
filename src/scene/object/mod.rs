@@ -99,9 +99,28 @@ impl Object {
         }
     }
 
+    pub fn bounding_box(&self) -> Option<(Vec3A, Vec3A)> {
+        match self.inner() {
+            ObjectKind::Sphere(sphere) => Some(sphere.bounding_box(self.transform().translation)),
+            _ => None,
+        }
+    }
+
     pub fn hit(&self, ray: &Ray, clip: &Clip) -> Option<Manifold> {
         match self.inner() {
             ObjectKind::Sphere(sphere) => sphere.hit(
+                self.object_ref.expect("can't hit-test orphan objects"),
+                self.transform().translation,
+                ray,
+                clip,
+            ),
+            _ => None,
+        }
+    }
+
+    pub fn hit_volumetric(&self, ray: &Ray, clip: &Clip) -> Option<Manifold> {
+        match self.inner() {
+            ObjectKind::Sphere(sphere) => sphere.hit_volumetric(
                 self.object_ref.expect("can't hit-test orphan objects"),
                 self.transform().translation,
                 ray,

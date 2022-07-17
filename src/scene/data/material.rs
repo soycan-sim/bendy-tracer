@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::LinearRgb;
 use crate::math::{UnitHemisphere, Vec3Ext};
-use crate::tracer::{Face, Manifold, Ray};
+use crate::tracer::{Manifold, Ray};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Material {
@@ -55,9 +55,9 @@ impl Material {
         &self,
         rng: &mut R,
         manifold: &Manifold,
-    ) -> (Option<Ray>, LinearRgb) {
+    ) -> (Option<Ray>, Option<LinearRgb>) {
         match *self {
-            Material::Flat { albedo } => (None, albedo),
+            Material::Flat { albedo } => (None, Some(albedo)),
             Material::Diffuse { albedo, roughness } => {
                 let hemisphere = UnitHemisphere::new(manifold.normal.into());
 
@@ -67,7 +67,7 @@ impl Material {
                 let fuzz = fuzz * roughness;
                 let ray = Ray::new(origin, direction + fuzz);
 
-                (Some(ray), albedo)
+                (Some(ray), Some(albedo))
             }
             Material::Metallic { albedo, roughness } => {
                 let hemisphere = UnitHemisphere::new(manifold.normal.into());
@@ -78,7 +78,7 @@ impl Material {
                 let fuzz = fuzz * roughness;
                 let ray = Ray::new(origin, direction + fuzz);
 
-                (Some(ray), albedo)
+                (Some(ray), Some(albedo))
             }
             Material::Glass {
                 albedo,
@@ -87,7 +87,7 @@ impl Material {
             } => {
                 let hemisphere = UnitHemisphere::new(manifold.normal.into());
 
-                let ior = if manifold.face == Face::Front {
+                let ior = if manifold.face.is_front() {
                     ior.recip()
                 } else {
                     ior
@@ -106,9 +106,9 @@ impl Material {
                 let fuzz = fuzz * roughness;
                 let ray = Ray::new(origin, direction + fuzz);
 
-                (Some(ray), albedo)
+                (Some(ray), Some(albedo))
             }
-            Material::Emissive { albedo, intensity } => (None, albedo * intensity),
+            Material::Emissive { albedo, intensity } => (None, Some(albedo * intensity)),
         }
     }
 }

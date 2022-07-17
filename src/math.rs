@@ -4,12 +4,33 @@ use glam::{Vec3, Vec3A};
 use rand::distributions::Uniform;
 use rand::prelude::*;
 
+pub trait Interpolate {
+    fn lerp(self, other: Self, factor: f32) -> Self;
+}
+
+impl Interpolate for f32 {
+    fn lerp(self, other: Self, factor: f32) -> Self {
+        self + (other - self) * factor
+    }
+}
+
+impl Interpolate for Vec3 {
+    fn lerp(self, other: Self, factor: f32) -> Self {
+        self + (other - self) * factor
+    }
+}
+
+impl Interpolate for Vec3A {
+    fn lerp(self, other: Self, factor: f32) -> Self {
+        self + (other - self) * factor
+    }
+}
+
 pub trait Vec3Ext {
     fn project(self, normal: Self) -> Self;
     fn reflect(self, normal: Self) -> Self;
     fn refract(self, normal: Self, ior: f32) -> Self;
     fn fresnel(self, normal: Self, ior: f32) -> f32;
-    fn lerp(self, other: Self, factor: f32) -> Self;
 }
 
 macro_rules! impl_vec3_ext {
@@ -35,10 +56,6 @@ macro_rules! impl_vec3_ext {
                 let r0 = (1.0 - ior) / (1.0 + ior);
                 let r0 = r0 * r0;
                 r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
-            }
-
-            fn lerp(self, other: Self, factor: f32) -> Self {
-                self + (other - self) * factor
             }
         }
     };
