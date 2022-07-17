@@ -12,6 +12,9 @@ use bendy_tracer::scene::{
 };
 use bendy_tracer::tracer::{Buffer, Status, Tracer};
 use clap::Parser;
+use flate2::bufread::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use glam::{Affine3A, Quat, Vec3, Vec3A};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use rand::prelude::*;
@@ -65,7 +68,12 @@ fn main() -> Result<(), Error> {
         let path = &args.scene;
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
-        let scene = serde_json::from_reader(&mut reader)?;
+        let scene = if path.extension() == Some("gz".as_ref()) {
+            let mut decoder = GzDecoder::new(reader);
+            serde_json::from_reader(&mut decoder)?
+        } else {
+            serde_json::from_reader(&mut reader)?
+        };
 
         writeln!(io::stderr(), "loaded scene from {}", path.display())?;
 
@@ -232,7 +240,13 @@ fn main() -> Result<(), Error> {
 
             let file = File::create(path)?;
             let mut writer = BufWriter::new(file);
+
+            if path.extension() == Some("gz".as_ref()) {
+                let mut encoder = GzEncoder::new(writer, Compression::default());
+                serde_json::to_writer_pretty(&mut encoder, &scene)?;
+            } else {
             serde_json::to_writer_pretty(&mut writer, &scene)?;
+            }
 
             writeln!(io::stderr(), "saved scene to {}", path.display())?;
         }
@@ -241,7 +255,12 @@ fn main() -> Result<(), Error> {
 
             let file = File::open(path)?;
             let mut reader = BufReader::new(file);
-            scene = serde_json::from_reader(&mut reader)?;
+            scene = if path.extension() == Some("gz".as_ref()) {
+                let mut decoder = GzDecoder::new(reader);
+                serde_json::from_reader(&mut decoder)?
+            } else {
+                serde_json::from_reader(&mut reader)?
+            };
             buffer.clear();
 
             camera = scene.find_by_tag("camera").unwrap();

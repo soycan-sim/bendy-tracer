@@ -64,6 +64,7 @@ dependencies = [
  "anyhow",
  "approx",
  "clap",
+ "flate2",
  "glam",
  "hashbrown",
  "image",

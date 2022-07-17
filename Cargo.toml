@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 anyhow = "1.0.58"
 approx = "0.5.1"
 clap = { version = "3.2.10", features = ["derive", "cargo", "unicode", "wrap_help"] }
+flate2 = "1.0.24"
 glam = { version = "0.21.2", features = ["approx", "serde", "debug-glam-assert", "rand"] }
 hashbrown = { version = "0.12.2", features = ["serde", "rayon"] }
 image = "0.24.2"
