@@ -10,7 +10,7 @@ use bendy_tracer::color::LinearRgb;
 use bendy_tracer::scene::{
     Camera, Data, DensityMap, Material, Object, Scene, Sphere, Update, UpdateQueue, Volume,
 };
-use bendy_tracer::tracer::{Buffer, Status, Tracer};
+use bendy_tracer::tracer::{Buffer, Config, Status, Tracer};
 use clap::Parser;
 use flate2::bufread::GzDecoder;
 use flate2::write::GzEncoder;
@@ -88,21 +88,32 @@ fn main() -> Result<(), Error> {
             0.5,
         )));
         let mat_blue = scene.add_data(Data::new(Material::diffuse(
-            LinearRgb::new(0.2, 0.2, 0.5),
+            LinearRgb::new(0.3, 0.4, 0.6),
             0.8,
         )));
 
         let mut rng = SmallRng::from_entropy();
 
         let vol_cloud = scene.add_data(Data::new(Volume::from(DensityMap::with_func(
-            8,
-            8,
-            8,
-            |x, y, _| {
-                let density = (x as f32 / 7.0).min(y as f32 / 7.0);
+            16,
+            16,
+            16,
+            |x, y, z| {
+                let x = x as f32 / 7.5 - 1.0;
+                let y = y as f32 / 7.5 - 1.0;
+                let z = z as f32 / 7.5 - 1.0;
+                let r = 0.75;
+                let density = {
+                    let dist = (x * x + y * y + z * z).sqrt();
+                    if dist > r {
+                        0.0
+                    } else {
+                        10.0 * (1.0 - dist).powf(3.0)
+                    }
+                };
                 let random = rng
-                    .sample::<f32, _>(Normal::new(0.075, 0.25).unwrap())
-                    .clamp(0.0, 1.0);
+                    .sample::<f32, _>(Normal::new(0.15, 0.25).unwrap())
+                    .max(0.0);
                 density * random
             },
         ))));
@@ -154,7 +165,11 @@ fn main() -> Result<(), Error> {
     }));
     update_queue.commit(&mut scene);
 
-    let tracer = Tracer::new();
+    let tracer = Tracer::with_config(Config {
+        chunks_x: 8,
+        chunks_y: 8,
+        ..Default::default()
+    });
 
     let mut buffer = Buffer::new(window_width, window_height);
     let mut max_samples = args.max_samples;
@@ -245,7 +260,7 @@ fn main() -> Result<(), Error> {
                 let mut encoder = GzEncoder::new(writer, Compression::default());
                 serde_json::to_writer_pretty(&mut encoder, &scene)?;
             } else {
-            serde_json::to_writer_pretty(&mut writer, &scene)?;
+                serde_json::to_writer_pretty(&mut writer, &scene)?;
             }
 
             writeln!(io::stderr(), "saved scene to {}", path.display())?;

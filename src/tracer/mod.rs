@@ -339,7 +339,7 @@ impl ChunkState {
             .as_volume()
             .expect("expected volume data");
 
-        let (ray, mut attenuation) = volume.shade(&mut self.rng, manifold);
+        let (ray, mut attenuation) = volume.shade(&mut self.rng, manifold, self.config.volume_step);
 
         if let Some(ray) = ray {
             let reflected = if manifold.face == Face::VolumeBack {

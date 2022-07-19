@@ -1,10 +1,12 @@
 use glam::{IVec3, Vec3A};
 use rand::prelude::*;
 use rand::Rng;
+use rand_distr::Standard;
 use serde::{Deserialize, Serialize};
 
 use crate::color::LinearRgb;
 use crate::math::{Interpolate, UnitSphere};
+use crate::tracer::Face;
 use crate::tracer::{Manifold, Ray};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -25,15 +27,19 @@ impl Volume {
         &self,
         rng: &mut R,
         manifold: &Manifold,
+        step: f32,
     ) -> (Option<Ray>, Option<LinearRgb>) {
         let offset = manifold.bbox.0;
         let size = manifold.bbox.1 - manifold.bbox.0;
         let coord = (manifold.position - offset) / size;
 
-        let density = self.sample(coord, SamplingMode::Trilinear);
+        let density = step * self.sample(coord, SamplingMode::Trilinear);
 
-        if rng.gen_bool(density as _) {
-            let origin = manifold.position;
+        if density >= 1.0 || rng.gen_bool(density as _) {
+            let mut origin = manifold.position;
+            if manifold.face == Face::Volume {
+                origin -= manifold.ray.direction * step * rng.sample::<f32, _>(Standard);
+            }
             let direction = UnitSphere.sample(rng);
             let ray = Ray::new(origin, direction);
             (Some(ray), Some(LinearRgb::splat(0.8)))
