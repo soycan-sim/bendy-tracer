@@ -10,7 +10,7 @@ use bendy_tracer::color::LinearRgb;
 use bendy_tracer::scene::{
     Camera, Data, DensityMap, Material, Object, Scene, Sphere, Update, UpdateQueue, Volume,
 };
-use bendy_tracer::tracer::{Buffer, Config, Status, Tracer};
+use bendy_tracer::tracer::{Buffer, Config, RenderConfig, Status, Tracer};
 use clap::Parser;
 use flate2::bufread::GzDecoder;
 use flate2::write::GzEncoder;
@@ -182,7 +182,12 @@ fn main() -> Result<(), Error> {
         prev_frame = Instant::now();
 
         let samples = if buffer.samples() < max_samples { 1 } else { 0 };
-        let status = tracer.render(&scene, camera, samples, &mut buffer);
+        let status = tracer.render(
+            &scene,
+            camera,
+            &RenderConfig::with_samples(samples),
+            &mut buffer,
+        );
 
         // delta time of the render, not the entire loop
         let this_frame = Instant::now();

@@ -42,6 +42,66 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+pub enum Subsample {
+    #[default]
+    None,
+    Subpixel(u32),
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+pub enum Output {
+    #[default]
+    Full,
+    Albedo,
+    Normal,
+    Depth,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RenderConfig {
+    pub output: Output,
+    pub subsample: Subsample,
+    pub deterministic: bool,
+    pub samples: usize,
+    pub max_bounces: Option<usize>,
+    pub max_volume_bounces: Option<usize>,
+    pub volume_step: Option<f32>,
+}
+
+impl RenderConfig {
+    const DEFAULT: Self = Self {
+        output: Output::Full,
+        subsample: Subsample::None,
+        deterministic: false,
+        samples: 64,
+        max_bounces: None,
+        max_volume_bounces: None,
+        volume_step: None,
+    };
+
+    pub fn with_samples(samples: usize) -> Self {
+        Self {
+            samples,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_samples_subsample(samples: usize, subsample: Subsample) -> Self {
+        Self {
+            samples,
+            subsample,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Done,
@@ -66,10 +126,10 @@ impl Tracer {
         &self,
         scene: &Scene,
         camera: ObjectRef,
-        samples: usize,
+        config: &RenderConfig,
         buffer: &mut Buffer,
     ) -> Status {
-        if samples == 0 {
+        if config.samples == 0 {
             return Status::Done;
         }
 
@@ -78,35 +138,58 @@ impl Tracer {
             .collect::<Vec<_>>();
 
         chunks.into_par_iter().for_each(|chunk| {
-            let mut chunk_state = ChunkState::new(self.config);
-            chunk_state.render_samples(scene, camera, samples, chunk);
+            let mut chunk_state = ChunkState::new(ChunkConfig::with_configs(&self.config, config));
+            chunk_state.render_samples(scene, camera, chunk);
         });
 
-        buffer.inc_samples(samples);
+        buffer.inc_samples(config.samples);
 
         Status::InProgress
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ChunkConfig {
+    pub output: Output,
+    pub subsample: Subsample,
+    pub deterministic: bool,
+    pub samples: usize,
+    pub max_bounces: usize,
+    pub max_volume_bounces: usize,
+    pub clip_min: f32,
+    pub clip_max: f32,
+    pub volume_step: f32,
+}
+
+impl ChunkConfig {
+    fn with_configs(main: &Config, render: &RenderConfig) -> Self {
+        Self {
+            output: render.output,
+            subsample: render.subsample,
+            deterministic: render.deterministic,
+            samples: render.samples,
+            max_bounces: render.max_bounces.unwrap_or(main.max_bounces),
+            max_volume_bounces: render.max_bounces.unwrap_or(main.max_volume_bounces),
+            clip_min: main.clip_min,
+            clip_max: main.clip_max,
+            volume_step: render.volume_step.unwrap_or(main.volume_step),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ChunkState {
-    pub config: Config,
+    config: ChunkConfig,
     pub rng: SmallRng,
 }
 
 impl ChunkState {
-    fn new(config: Config) -> Self {
+    fn new(config: ChunkConfig) -> Self {
         let rng = SmallRng::from_entropy();
         Self { config, rng }
     }
 
-    fn render_samples<'a>(
-        &mut self,
-        scene: &Scene,
-        camera: ObjectRef,
-        samples: usize,
-        chunk: Chunk<'a>,
-    ) {
+    fn render_samples<'a>(&mut self, scene: &Scene, camera: ObjectRef, chunk: Chunk<'a>) {
         let camera_obj = scene.get_object(camera);
         let camera = camera_obj.as_camera().expect("expected a camera object");
 
@@ -130,7 +213,7 @@ impl ChunkState {
 
         let scatter_defocus = UnitDisk::new(Vec3::NEG_Z);
 
-        let scatter = (0..samples)
+        let scatter = (0..self.config.samples)
             .map(|_| {
                 let u = self.rng.sample(&scatter_u);
                 let v = self.rng.sample(&scatter_v);
@@ -138,7 +221,7 @@ impl ChunkState {
             })
             .collect::<Vec<_>>();
 
-        let defocus = (0..samples)
+        let defocus = (0..self.config.samples)
             .map(|_| self.rng.sample(&scatter_defocus))
             .collect::<Vec<Vec3A>>();
 
