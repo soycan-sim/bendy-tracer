@@ -8,17 +8,40 @@ use crate::scene::{DataRef, ObjectRef};
 pub enum Face {
     Front,
     Back,
+    Volume,
+    VolumeFront,
+    VolumeBack,
+}
+
+impl Face {
+    pub fn is_front(&self) -> bool {
+        matches!(self, Self::Front | Self::VolumeFront)
+    }
+
+    pub fn is_back(&self) -> bool {
+        matches!(self, Self::Back | Self::VolumeBack)
+    }
+
+    pub fn is_surface(&self) -> bool {
+        matches!(self, Self::Front | Self::Back)
+    }
+
+    pub fn is_volume(&self) -> bool {
+        matches!(self, Self::Volume | Self::VolumeFront | Self::VolumeBack)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Manifold {
     pub position: Vec3A,
     pub normal: Vec3A,
+    pub bbox: (Vec3A, Vec3A),
     pub face: Face,
     pub t: f32,
     pub ray: Ray,
     pub object_ref: Option<ObjectRef>,
     pub mat_ref: Option<DataRef>,
+    pub vol_ref: Option<DataRef>,
 }
 
 #[derive(Debug, Clone, Copy)]

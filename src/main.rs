@@ -2,22 +2,28 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Error};
 use bendy_tracer::color::LinearRgb;
-use bendy_tracer::scene::{Camera, Data, Material, Object, Scene, Sphere, Update, UpdateQueue};
-use bendy_tracer::tracer::{Buffer, Status, Tracer};
+use bendy_tracer::scene::{
+    Camera, Data, DensityMap, Material, Object, Scene, Sphere, Update, UpdateQueue, Volume,
+};
+use bendy_tracer::tracer::{Buffer, Config, Status, Tracer};
 use clap::Parser;
+use flate2::bufread::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use glam::{Affine3A, Quat, Vec3, Vec3A};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use rand::prelude::*;
+use rand_distr::Normal;
 
 const SAMPLES_STEP: usize = 8;
 const SAMPLES_BIG_STEP: usize = 64;
 const SAMPLES_VERY_BIG_STEP: usize = 1024;
 
-const DEFAULT_SCENE: &str = "scene.json";
 const DEFAULT_SCREENSHOT: &str = "render.png";
 
 #[derive(Debug, Parser)]
@@ -35,8 +41,8 @@ struct Cli {
     #[clap(long, value_parser, default_value_os_t = PathBuf::from("screenshots/render.png"))]
     screenshot: PathBuf,
 
-    #[clap(long, value_parser)]
-    scene: Option<PathBuf>,
+    #[clap(long, value_parser, default_value_os_t = PathBuf::from("scene.json"))]
+    scene: PathBuf,
 }
 
 fn main() -> Result<(), Error> {
@@ -58,10 +64,16 @@ fn main() -> Result<(), Error> {
 
     let mut window_buffer = vec![0_u32; window_width * window_height];
 
-    let mut scene = if let Some(path) = &args.scene {
+    let mut scene = if args.scene.exists() {
+        let path = &args.scene;
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
-        let scene = serde_json::from_reader(&mut reader)?;
+        let scene = if path.extension() == Some("gz".as_ref()) {
+            let mut decoder = GzDecoder::new(reader);
+            serde_json::from_reader(&mut decoder)?
+        } else {
+            serde_json::from_reader(&mut reader)?
+        };
 
         writeln!(io::stderr(), "loaded scene from {}", path.display())?;
 
@@ -76,34 +88,69 @@ fn main() -> Result<(), Error> {
             0.5,
         )));
         let mat_blue = scene.add_data(Data::new(Material::diffuse(
-            LinearRgb::new(0.2, 0.2, 0.5),
+            LinearRgb::new(0.3, 0.4, 0.6),
             0.8,
         )));
+
+        let mut rng = SmallRng::from_entropy();
+
+        let vol_cloud = scene.add_data(Data::new(Volume::from(DensityMap::with_func(
+            16,
+            16,
+            16,
+            |x, y, z| {
+                let x = x as f32 / 7.5 - 1.0;
+                let y = y as f32 / 7.5 - 1.0;
+                let z = z as f32 / 7.5 - 1.0;
+                let r = 0.75;
+                let density = {
+                    let dist = (x * x + y * y + z * z).sqrt();
+                    if dist > r {
+                        0.0
+                    } else {
+                        10.0 * (1.0 - dist).powf(3.0)
+                    }
+                };
+                let random = rng
+                    .sample::<f32, _>(Normal::new(0.15, 0.25).unwrap())
+                    .max(0.0);
+                density * random
+            },
+        ))));
 
         scene.set_root_material(mat_root);
 
         scene.add_object(
-            Object::new(Camera::default())
-                .with_tag("camera".to_string())
-                .with_transform(Affine3A::from_rotation_translation(
-                    Quat::from_euler(
-                        glam::EulerRot::YXZ,
-                        10_f32.to_radians(),
-                        -5_f32.to_radians(),
-                        0.0,
-                    ),
-                    Vec3::new(1.6, 2.1, 8.0),
-                )),
+            Object::new(Camera {
+                focal_length: 0.085,
+                fstop: 1.4,
+                focus: Some(12.0),
+                ..Default::default()
+            })
+            .with_tag("camera".to_string())
+            .with_transform(Affine3A::from_rotation_translation(
+                Quat::from_euler(
+                    glam::EulerRot::YXZ,
+                    10_f32.to_radians(),
+                    -11_f32.to_radians(),
+                    0.0,
+                ),
+                Vec3::new(2.4, 2.7, 12.0),
+            )),
         );
         scene.add_object(
             Object::new(Sphere::new(mat_blue, 100.0))
                 .with_translation(Vec3A::new(0.0, -101.0, 0.0)),
         );
         scene.add_object(
-            Object::new(Sphere::new(mat_red, 1.0)).with_translation(Vec3A::new(0.0, 0.0, 0.0)),
+            Object::new(Sphere::new_volumetric(mat_red, vol_cloud, 1.0))
+                .with_translation(Vec3A::new(0.0, 0.1, 0.0)),
         );
         scene.add_object(
-            Object::new(Sphere::new(mat_light, 0.5)).with_translation(Vec3A::new(3.0, 3.0, 2.0)),
+            Object::new(Sphere::new(mat_red, 0.5)).with_translation(Vec3A::new(-0.8, 0.5, -3.0)),
+        );
+        scene.add_object(
+            Object::new(Sphere::new(mat_light, 0.5)).with_translation(Vec3A::new(1.0, 3.0, -1.0)),
         );
 
         scene
@@ -118,7 +165,11 @@ fn main() -> Result<(), Error> {
     }));
     update_queue.commit(&mut scene);
 
-    let tracer = Tracer::new();
+    let tracer = Tracer::with_config(Config {
+        chunks_x: 8,
+        chunks_y: 8,
+        ..Default::default()
+    });
 
     let mut buffer = Buffer::new(window_width, window_height);
     let mut max_samples = args.max_samples;
@@ -200,26 +251,31 @@ fn main() -> Result<(), Error> {
             writeln!(io::stderr(), "saved screenshot to {}", path.display())?;
         }
         if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::K, KeyRepeat::No) {
-            let path = args
-                .scene
-                .as_deref()
-                .unwrap_or_else(|| Path::new(DEFAULT_SCENE));
+            let path = &args.scene;
 
             let file = File::create(path)?;
             let mut writer = BufWriter::new(file);
-            serde_json::to_writer_pretty(&mut writer, &scene)?;
+
+            if path.extension() == Some("gz".as_ref()) {
+                let mut encoder = GzEncoder::new(writer, Compression::default());
+                serde_json::to_writer_pretty(&mut encoder, &scene)?;
+            } else {
+                serde_json::to_writer_pretty(&mut writer, &scene)?;
+            }
 
             writeln!(io::stderr(), "saved scene to {}", path.display())?;
         }
         if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::L, KeyRepeat::No) {
-            let path = args
-                .scene
-                .as_deref()
-                .unwrap_or_else(|| Path::new(DEFAULT_SCENE));
+            let path = &args.scene;
 
             let file = File::open(path)?;
             let mut reader = BufReader::new(file);
-            scene = serde_json::from_reader(&mut reader)?;
+            scene = if path.extension() == Some("gz".as_ref()) {
+                let mut decoder = GzDecoder::new(reader);
+                serde_json::from_reader(&mut decoder)?
+            } else {
+                serde_json::from_reader(&mut reader)?
+            };
             buffer.clear();
 
             camera = scene.find_by_tag("camera").unwrap();

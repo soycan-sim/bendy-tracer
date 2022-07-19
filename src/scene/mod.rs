@@ -135,6 +135,10 @@ impl Scene {
     pub fn iter(&self) -> impl Iterator<Item = &'_ Object> {
         self.objects.iter()
     }
+
+    pub fn pairs(&self) -> impl Iterator<Item = (ObjectRef, &'_ Object)> {
+        self.objects.pairs().map(|(k, v)| (*k, v))
+    }
 }
 
 impl Default for Scene {
