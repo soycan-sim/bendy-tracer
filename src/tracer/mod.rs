@@ -4,7 +4,6 @@ use rand_distr::Uniform;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
-use crate::color::LinearRgb;
 use crate::math::UnitDisk;
 use crate::scene::{DataRef, ObjectRef, Scene};
 
@@ -23,6 +22,7 @@ pub struct Config {
     pub volume_step: f32,
     pub chunks_x: usize,
     pub chunks_y: usize,
+    pub output: Output,
 }
 
 impl Config {
@@ -34,6 +34,7 @@ impl Config {
         volume_step: 0.1,
         chunks_x: 4,
         chunks_y: 2,
+        output: Output::Full,
     };
 }
 
@@ -115,9 +116,9 @@ pub enum Output {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct RenderConfig {
-    pub output: Output,
     pub subsample: Subsample,
     pub samples: usize,
+    pub output: Option<Output>,
     pub max_bounces: Option<usize>,
     pub max_volume_bounces: Option<usize>,
     pub volume_step: Option<f32>,
@@ -125,9 +126,9 @@ pub struct RenderConfig {
 
 impl RenderConfig {
     const DEFAULT: Self = Self {
-        output: Output::Full,
         subsample: Subsample::None,
         samples: 64,
+        output: None,
         max_bounces: None,
         max_volume_bounces: None,
         volume_step: None,
@@ -216,7 +217,7 @@ struct ChunkConfig {
 impl ChunkConfig {
     fn with_configs(main: &Config, render: &RenderConfig) -> Self {
         Self {
-            output: render.output,
+            output: render.output.unwrap_or(main.output),
             subsample: render.subsample,
             samples: render.samples,
             max_bounces: render.max_bounces.unwrap_or(main.max_bounces),
@@ -301,28 +302,34 @@ impl ChunkState {
                         }
 
                         let sample = self.sample(&ray, scene, 0);
-                        chunk.add_samples(x, y, sample);
+
+                        match self.config.output {
+                            Output::Full => chunk.write_color(x, y, sample.color),
+                            Output::Albedo => chunk.write_color(x, y, sample.albedo),
+                            Output::Normal => chunk.write_normal(x, y, sample.normal),
+                            Output::Depth => chunk.write_depth(x, y, sample.depth),
+                        }
                     }
                 }
             }
         }
     }
 
-    fn sample(&mut self, ray: &Ray, scene: &Scene, bounce: usize) -> LinearRgb {
+    fn sample(&mut self, ray: &Ray, scene: &Scene, bounce: usize) -> ColorData {
         if bounce > self.config.max_bounces {
-            return LinearRgb::BLACK;
+            return Default::default();
         }
 
         if let Some(manifold) = self.try_hit(ray, scene) {
             if manifold.face.is_surface() {
                 match manifold.mat_ref {
                     Some(mat_ref) => self.sample_surface(scene, &manifold, mat_ref, bounce),
-                    None => LinearRgb::BLACK,
+                    None => Default::default(),
                 }
             } else {
                 match manifold.vol_ref {
                     Some(vol_ref) => self.sample_volume(scene, &manifold, vol_ref, bounce, 0),
-                    None => LinearRgb::BLACK,
+                    None => Default::default(),
                 }
             }
         } else {
@@ -337,23 +344,23 @@ impl ChunkState {
         last_object: ObjectRef,
         bounce: usize,
         volume_bounce: usize,
-    ) -> LinearRgb {
+    ) -> ColorData {
         if volume_bounce > self.config.max_volume_bounces {
-            return LinearRgb::BLACK;
+            return Default::default();
         }
 
         if let Some(manifold) = self.try_hit_volume(ray, scene, last_object) {
             if manifold.face.is_surface() {
                 match manifold.mat_ref {
                     Some(mat_ref) => self.sample_surface(scene, &manifold, mat_ref, bounce),
-                    None => LinearRgb::BLACK,
+                    None => Default::default(),
                 }
             } else {
                 match manifold.vol_ref {
                     Some(vol_ref) => {
                         self.sample_volume(scene, &manifold, vol_ref, bounce, volume_bounce)
                     }
-                    None => LinearRgb::BLACK,
+                    None => Default::default(),
                 }
             }
         } else {
@@ -407,7 +414,7 @@ impl ChunkState {
         result
     }
 
-    fn sample_root(&mut self, ray: &Ray, scene: &Scene) -> LinearRgb {
+    fn sample_root(&mut self, ray: &Ray, scene: &Scene) -> ColorData {
         let material = scene.root_material();
 
         let manifold = Manifold {
@@ -433,7 +440,7 @@ impl ChunkState {
         manifold: &Manifold,
         mat_ref: DataRef,
         bounce: usize,
-    ) -> LinearRgb {
+    ) -> ColorData {
         let material = scene
             .get_data(mat_ref)
             .as_material()
@@ -444,7 +451,7 @@ impl ChunkState {
         if let Some(ray) = ray {
             let reflected = self.sample(&ray, scene, bounce + 1);
             if let Some(attenuation) = &mut attenuation {
-                *attenuation *= reflected;
+                attenuation.color *= reflected.color;
             } else {
                 attenuation = Some(reflected);
             }
@@ -460,7 +467,7 @@ impl ChunkState {
         vol_ref: DataRef,
         bounce: usize,
         volume_bounce: usize,
-    ) -> LinearRgb {
+    ) -> ColorData {
         let volume = scene
             .get_data(vol_ref)
             .as_volume()
@@ -481,7 +488,7 @@ impl ChunkState {
                 )
             };
             if let Some(attenuation) = &mut attenuation {
-                *attenuation *= reflected;
+                attenuation.color *= reflected.color;
             } else {
                 attenuation = Some(reflected);
             }

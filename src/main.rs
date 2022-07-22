@@ -10,8 +10,8 @@ use bendy_tracer::color::LinearRgb;
 use bendy_tracer::scene::{
     Camera, Data, DensityMap, Material, Object, Scene, Sphere, Update, UpdateQueue, Volume,
 };
-use bendy_tracer::tracer::{Buffer, Config, RenderConfig, Status, Subsample, Tracer};
-use clap::Parser;
+use bendy_tracer::tracer::{Buffer, ColorSpace, Config, RenderConfig, Status, Subsample, Tracer};
+use clap::{Parser, ValueEnum};
 use flate2::bufread::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -22,6 +22,32 @@ use rand_distr::Normal;
 
 const DEFAULT_SCREENSHOT: &str = "render.png";
 
+#[derive(Debug, Default, Clone, Copy, ValueEnum)]
+enum Output {
+    #[default]
+    Full,
+    Albedo,
+    Normal,
+}
+
+impl Output {
+    fn into_output(self) -> bendy_tracer::tracer::Output {
+        match self {
+            Self::Full => bendy_tracer::tracer::Output::Full,
+            Self::Albedo => bendy_tracer::tracer::Output::Albedo,
+            Self::Normal => bendy_tracer::tracer::Output::Normal,
+        }
+    }
+
+    fn color_space(self) -> ColorSpace {
+        match self {
+            Self::Full => ColorSpace::SRgb,
+            Self::Albedo => ColorSpace::SRgb,
+            Self::Normal => ColorSpace::None,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[clap(author, version, about)]
 struct Cli {
@@ -30,6 +56,9 @@ struct Cli {
 
     #[clap(long, value_parser, default_value_t = 512)]
     height: usize,
+
+    #[clap(long, value_parser)]
+    output: Output,
 
     #[clap(long, value_parser, default_value_t = 64)]
     samples: usize,
@@ -165,12 +194,13 @@ fn main() -> Result<(), Error> {
     update_queue.commit(&mut scene);
 
     let tracer = Tracer::with_config(Config {
+        output: args.output.into_output(),
         chunks_x: 8,
-        chunks_y: 8,
+        chunks_y: 4,
         ..Default::default()
     });
 
-    let mut buffer = Buffer::new(window_width, window_height);
+    let mut buffer = Buffer::new(window_width, window_height, args.output.color_space());
     let max_samples = args.samples;
     let subsample = match args.subsample {
         0 | 1 => Subsample::None,

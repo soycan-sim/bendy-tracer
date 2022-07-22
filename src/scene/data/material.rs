@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::LinearRgb;
 use crate::math::{UnitHemisphere, Vec3Ext};
-use crate::tracer::{Manifold, Ray};
+use crate::tracer::{ColorData, Manifold, Ray};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Material {
@@ -55,9 +55,18 @@ impl Material {
         &self,
         rng: &mut R,
         manifold: &Manifold,
-    ) -> (Option<Ray>, Option<LinearRgb>) {
+    ) -> (Option<Ray>, Option<ColorData>) {
         match *self {
-            Material::Flat { albedo } => (None, Some(albedo)),
+            Material::Flat { albedo } => {
+                let color_data = ColorData {
+                    color: albedo,
+                    albedo,
+                    normal: manifold.normal,
+                    depth: manifold.t,
+                };
+
+                (None, Some(color_data))
+            }
             Material::Diffuse { albedo, roughness } => {
                 let hemisphere = UnitHemisphere::new(manifold.normal.into());
 
@@ -67,7 +76,14 @@ impl Material {
                 let fuzz = fuzz * roughness;
                 let ray = Ray::new(origin, direction + fuzz);
 
-                (Some(ray), Some(albedo))
+                let color_data = ColorData {
+                    color: albedo,
+                    albedo,
+                    normal: manifold.normal,
+                    depth: manifold.t,
+                };
+
+                (Some(ray), Some(color_data))
             }
             Material::Metallic { albedo, roughness } => {
                 let hemisphere = UnitHemisphere::new(manifold.normal.into());
@@ -78,7 +94,14 @@ impl Material {
                 let fuzz = fuzz * roughness;
                 let ray = Ray::new(origin, direction + fuzz);
 
-                (Some(ray), Some(albedo))
+                let color_data = ColorData {
+                    color: albedo,
+                    albedo,
+                    normal: manifold.normal,
+                    depth: manifold.t,
+                };
+
+                (Some(ray), Some(color_data))
             }
             Material::Glass {
                 albedo,
@@ -106,9 +129,25 @@ impl Material {
                 let fuzz = fuzz * roughness;
                 let ray = Ray::new(origin, direction + fuzz);
 
-                (Some(ray), Some(albedo))
+                let color_data = ColorData {
+                    color: albedo,
+                    albedo,
+                    normal: manifold.normal,
+                    depth: manifold.t,
+                };
+
+                (Some(ray), Some(color_data))
             }
-            Material::Emissive { albedo, intensity } => (None, Some(albedo * intensity)),
+            Material::Emissive { albedo, intensity } => {
+                let color_data = ColorData {
+                    color: albedo * intensity,
+                    albedo: albedo * intensity,
+                    normal: manifold.normal,
+                    depth: manifold.t,
+                };
+
+                (None, Some(color_data))
+            }
         }
     }
 }

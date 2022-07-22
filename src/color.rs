@@ -26,6 +26,116 @@ fn u8_to_f32(x: u8) -> f32 {
     x as f32 / u8::MAX as f32
 }
 
+macro_rules! impl_rgb {
+    ($t:ty) => {
+        impl $t {
+            pub const BLACK: Self = Self::splat(0.0);
+            pub const WHITE: Self = Self::splat(1.0);
+
+            pub const fn new(r: f32, g: f32, b: f32) -> Self {
+                Self { r, g, b }
+            }
+
+            pub const fn splat(x: f32) -> Self {
+                Self::new(x, x, x)
+            }
+
+            pub fn to_bytes(self) -> [u8; 3] {
+                <[u8; 3]>::from(self)
+            }
+        }
+
+        impl From<[f32; 3]> for $t {
+            fn from([r, g, b]: [f32; 3]) -> Self {
+                Self { r, g, b }
+            }
+        }
+
+        impl From<$t> for [f32; 3] {
+            fn from(x: $t) -> Self {
+                [x.r, x.g, x.b]
+            }
+        }
+
+        impl From<(f32, f32, f32)> for $t {
+            fn from((r, g, b): (f32, f32, f32)) -> Self {
+                Self { r, g, b }
+            }
+        }
+
+        impl From<$t> for (f32, f32, f32) {
+            fn from(x: $t) -> Self {
+                (x.r, x.g, x.b)
+            }
+        }
+
+        impl From<$t> for [u8; 3] {
+            fn from(x: $t) -> Self {
+                let r = f32_to_u8(x.r);
+                let g = f32_to_u8(x.g);
+                let b = f32_to_u8(x.b);
+                [r, g, b]
+            }
+        }
+
+        impl From<$t> for (u8, u8, u8) {
+            fn from(x: $t) -> Self {
+                let r = f32_to_u8(x.r);
+                let g = f32_to_u8(x.g);
+                let b = f32_to_u8(x.b);
+                (r, g, b)
+            }
+        }
+
+        impl From<[u8; 3]> for $t {
+            fn from([r, g, b]: [u8; 3]) -> Self {
+                let r = u8_to_f32(r);
+                let g = u8_to_f32(g);
+                let b = u8_to_f32(b);
+                Self { r, g, b }
+            }
+        }
+
+        impl From<(u8, u8, u8)> for $t {
+            fn from((r, g, b): (u8, u8, u8)) -> Self {
+                let r = u8_to_f32(r);
+                let g = u8_to_f32(g);
+                let b = u8_to_f32(b);
+                Self { r, g, b }
+            }
+        }
+    };
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Rgb {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+}
+
+impl_rgb!(Rgb);
+
+impl From<SRgb> for Rgb {
+    fn from(c: SRgb) -> Self {
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        }
+    }
+}
+
+impl From<LinearRgb> for Rgb {
+    fn from(c: LinearRgb) -> Self {
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SRgb {
     pub r: f32,
@@ -33,18 +143,9 @@ pub struct SRgb {
     pub b: f32,
 }
 
+impl_rgb!(SRgb);
+
 impl SRgb {
-    pub const BLACK: Self = Self::splat(0.0);
-    pub const WHITE: Self = Self::splat(1.0);
-
-    pub const fn new(r: f32, g: f32, b: f32) -> Self {
-        Self { r, g, b }
-    }
-
-    pub const fn splat(x: f32) -> Self {
-        Self::new(x, x, x)
-    }
-
     pub fn from_linear(r: f32, g: f32, b: f32) -> Self {
         let r = linear_to_srgb(r);
         let g = linear_to_srgb(g);
@@ -56,75 +157,11 @@ impl SRgb {
     pub fn to_linear(self) -> LinearRgb {
         LinearRgb::from(self)
     }
-
-    pub fn to_bytes(self) -> [u8; 3] {
-        <[u8; 3]>::from(self)
-    }
 }
 
 impl From<LinearRgb> for SRgb {
     fn from(c: LinearRgb) -> Self {
         Self::from_linear(c.r, c.g, c.b)
-    }
-}
-
-impl From<[f32; 3]> for SRgb {
-    fn from([r, g, b]: [f32; 3]) -> Self {
-        Self { r, g, b }
-    }
-}
-
-impl From<SRgb> for [f32; 3] {
-    fn from(SRgb { r, g, b }: SRgb) -> Self {
-        [r, g, b]
-    }
-}
-
-impl From<(f32, f32, f32)> for SRgb {
-    fn from((r, g, b): (f32, f32, f32)) -> Self {
-        Self { r, g, b }
-    }
-}
-
-impl From<SRgb> for (f32, f32, f32) {
-    fn from(SRgb { r, g, b }: SRgb) -> Self {
-        (r, g, b)
-    }
-}
-
-impl From<SRgb> for [u8; 3] {
-    fn from(SRgb { r, g, b }: SRgb) -> Self {
-        let r = f32_to_u8(r);
-        let g = f32_to_u8(g);
-        let b = f32_to_u8(b);
-        [r, g, b]
-    }
-}
-
-impl From<SRgb> for (u8, u8, u8) {
-    fn from(SRgb { r, g, b }: SRgb) -> Self {
-        let r = f32_to_u8(r);
-        let g = f32_to_u8(g);
-        let b = f32_to_u8(b);
-        (r, g, b)
-    }
-}
-
-impl From<[u8; 3]> for SRgb {
-    fn from([r, g, b]: [u8; 3]) -> Self {
-        let r = u8_to_f32(r);
-        let g = u8_to_f32(g);
-        let b = u8_to_f32(b);
-        Self { r, g, b }
-    }
-}
-
-impl From<(u8, u8, u8)> for SRgb {
-    fn from((r, g, b): (u8, u8, u8)) -> Self {
-        let r = u8_to_f32(r);
-        let g = u8_to_f32(g);
-        let b = u8_to_f32(b);
-        Self { r, g, b }
     }
 }
 
@@ -135,18 +172,9 @@ pub struct LinearRgb {
     pub b: f32,
 }
 
+impl_rgb!(LinearRgb);
+
 impl LinearRgb {
-    pub const BLACK: Self = Self::splat(0.0);
-    pub const WHITE: Self = Self::splat(1.0);
-
-    pub const fn new(r: f32, g: f32, b: f32) -> Self {
-        Self { r, g, b }
-    }
-
-    pub const fn splat(x: f32) -> Self {
-        Self::new(x, x, x)
-    }
-
     pub fn from_srgb(r: f32, g: f32, b: f32) -> Self {
         let r = srgb_to_linear(r);
         let g = srgb_to_linear(g);
@@ -158,75 +186,11 @@ impl LinearRgb {
     pub fn to_srgb(self) -> SRgb {
         SRgb::from(self)
     }
-
-    pub fn to_bytes(self) -> [u8; 3] {
-        <[u8; 3]>::from(self)
-    }
 }
 
 impl From<SRgb> for LinearRgb {
     fn from(c: SRgb) -> Self {
         Self::from_srgb(c.r, c.g, c.b)
-    }
-}
-
-impl From<[f32; 3]> for LinearRgb {
-    fn from([r, g, b]: [f32; 3]) -> Self {
-        Self { r, g, b }
-    }
-}
-
-impl From<LinearRgb> for [f32; 3] {
-    fn from(LinearRgb { r, g, b }: LinearRgb) -> Self {
-        [r, g, b]
-    }
-}
-
-impl From<(f32, f32, f32)> for LinearRgb {
-    fn from((r, g, b): (f32, f32, f32)) -> Self {
-        Self { r, g, b }
-    }
-}
-
-impl From<LinearRgb> for (f32, f32, f32) {
-    fn from(LinearRgb { r, g, b }: LinearRgb) -> Self {
-        (r, g, b)
-    }
-}
-
-impl From<LinearRgb> for [u8; 3] {
-    fn from(LinearRgb { r, g, b }: LinearRgb) -> Self {
-        let r = f32_to_u8(r);
-        let g = f32_to_u8(g);
-        let b = f32_to_u8(b);
-        [r, g, b]
-    }
-}
-
-impl From<LinearRgb> for (u8, u8, u8) {
-    fn from(LinearRgb { r, g, b }: LinearRgb) -> Self {
-        let r = f32_to_u8(r);
-        let g = f32_to_u8(g);
-        let b = f32_to_u8(b);
-        (r, g, b)
-    }
-}
-
-impl From<[u8; 3]> for LinearRgb {
-    fn from([r, g, b]: [u8; 3]) -> Self {
-        let r = u8_to_f32(r);
-        let g = u8_to_f32(g);
-        let b = u8_to_f32(b);
-        Self { r, g, b }
-    }
-}
-
-impl From<(u8, u8, u8)> for LinearRgb {
-    fn from((r, g, b): (u8, u8, u8)) -> Self {
-        let r = u8_to_f32(r);
-        let g = u8_to_f32(g);
-        let b = u8_to_f32(b);
-        Self { r, g, b }
     }
 }
 
