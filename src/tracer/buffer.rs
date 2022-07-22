@@ -1,27 +1,46 @@
 use std::mem;
 use std::ops::{Deref, Range};
 
+use glam::Vec3A;
 use image::{Rgba, Rgba32FImage, RgbaImage};
 
-use crate::color::LinearRgb;
+use crate::color::{LinearRgb, Rgb};
 
 const BLACK_ALPHA_ONE: Rgba<f32> = Rgba([0.0, 0.0, 0.0, 1.0]);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSpace {
+    None,
+    Linear,
+    SRgb,
+}
+
+impl ColorSpace {
+    pub fn convert_linear(self, linear: LinearRgb) -> Rgb {
+        match self {
+            Self::None | Self::Linear => linear.into(),
+            Self::SRgb => linear.to_srgb().into(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Buffer {
     samples: usize,
     buffer: Rgba32FImage,
     preview: Option<RgbaImage>,
+    color_space: ColorSpace,
 }
 
 impl Buffer {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub fn new(width: usize, height: usize, color_space: ColorSpace) -> Self {
         let samples = 0;
         let buffer = Rgba32FImage::from_pixel(width as _, height as _, BLACK_ALPHA_ONE);
         Self {
             samples,
             buffer,
             preview: None,
+            color_space,
         }
     }
 
@@ -101,10 +120,10 @@ impl Buffer {
 
         for (target, source) in preview.pixels_mut().zip(self.buffer.pixels()) {
             let rgb = LinearRgb::from([source.0[0], source.0[1], source.0[2]]) * samples_recip;
-            let srgb = rgb.to_srgb();
+            let converted = self.color_space.convert_linear(rgb);
             let alpha = source.0[3];
 
-            let [r, g, b] = srgb.to_bytes();
+            let [r, g, b] = converted.to_bytes();
             let a = (alpha * u8::MAX as f32) as u8;
 
             *target = Rgba([r, g, b, a]);
@@ -132,11 +151,25 @@ impl Buffer {
         self.samples += samples;
     }
 
-    pub(super) fn add_samples(&mut self, x: usize, y: usize, pixel: LinearRgb) {
+    pub(super) fn write_color(&mut self, x: usize, y: usize, pixel: LinearRgb) {
         let Rgba([r, g, b, _]) = self.buffer.get_pixel_mut(x as _, y as _);
         *r += pixel.r;
         *g += pixel.g;
         *b += pixel.b;
+    }
+
+    pub(super) fn write_normal(&mut self, x: usize, y: usize, pixel: Vec3A) {
+        let Rgba([r, g, b, _]) = self.buffer.get_pixel_mut(x as _, y as _);
+        *r += pixel.x;
+        *g += pixel.y;
+        *b += pixel.z;
+    }
+
+    pub(super) fn write_depth(&mut self, x: usize, y: usize, pixel: f32) {
+        let Rgba([r, g, b, _]) = self.buffer.get_pixel_mut(x as _, y as _);
+        *r += pixel;
+        *g += pixel;
+        *b += pixel;
     }
 }
 
@@ -181,7 +214,7 @@ impl<'a> Chunk<'a> {
 
     // SAFETY: this function must ensure that pixels outside of its bounds are never modified
     //         the bounds are inclusive on the lower bound and exclusive on the upper bound
-    pub fn add_samples(&mut self, x: usize, y: usize, pixel: LinearRgb) {
+    pub fn write_color(&mut self, x: usize, y: usize, pixel: LinearRgb) {
         assert!(
             x >= self.min_x && x < self.max_x && y >= self.min_y && y < self.max_y,
             "index ({x}, {y}) out of bounds ({min_x}, {min_y}; {max_x}, {max_y})",
@@ -190,7 +223,35 @@ impl<'a> Chunk<'a> {
             max_x = self.max_x,
             max_y = self.max_y,
         );
-        self.buffer.add_samples(x, y, pixel);
+        self.buffer.write_color(x, y, pixel);
+    }
+
+    // SAFETY: this function must ensure that pixels outside of its bounds are never modified
+    //         the bounds are inclusive on the lower bound and exclusive on the upper bound
+    pub fn write_normal(&mut self, x: usize, y: usize, pixel: Vec3A) {
+        assert!(
+            x >= self.min_x && x < self.max_x && y >= self.min_y && y < self.max_y,
+            "index ({x}, {y}) out of bounds ({min_x}, {min_y}; {max_x}, {max_y})",
+            min_x = self.min_x,
+            min_y = self.min_y,
+            max_x = self.max_x,
+            max_y = self.max_y,
+        );
+        self.buffer.write_normal(x, y, pixel);
+    }
+
+    // SAFETY: this function must ensure that pixels outside of its bounds are never modified
+    //         the bounds are inclusive on the lower bound and exclusive on the upper bound
+    pub fn write_depth(&mut self, x: usize, y: usize, pixel: f32) {
+        assert!(
+            x >= self.min_x && x < self.max_x && y >= self.min_y && y < self.max_y,
+            "index ({x}, {y}) out of bounds ({min_x}, {min_y}; {max_x}, {max_y})",
+            min_x = self.min_x,
+            min_y = self.min_y,
+            max_x = self.max_x,
+            max_y = self.max_y,
+        );
+        self.buffer.write_depth(x, y, pixel);
     }
 }
 

@@ -2,6 +2,7 @@ use std::ops::Mul;
 
 use glam::{Affine3A, Quat, Vec3A};
 
+use crate::color::LinearRgb;
 use crate::scene::{DataRef, ObjectRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,25 @@ pub struct Manifold {
     pub object_ref: Option<ObjectRef>,
     pub mat_ref: Option<DataRef>,
     pub vol_ref: Option<DataRef>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ColorData {
+    pub color: LinearRgb,
+    pub albedo: LinearRgb,
+    pub normal: Vec3A,
+    pub depth: f32,
+}
+
+impl Default for ColorData {
+    fn default() -> Self {
+        Self {
+            color: LinearRgb::BLACK,
+            albedo: LinearRgb::BLACK,
+            normal: Vec3A::ZERO,
+            depth: f32::INFINITY,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

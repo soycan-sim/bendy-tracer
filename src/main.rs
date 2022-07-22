@@ -10,8 +10,8 @@ use bendy_tracer::color::LinearRgb;
 use bendy_tracer::scene::{
     Camera, Data, DensityMap, Material, Object, Scene, Sphere, Update, UpdateQueue, Volume,
 };
-use bendy_tracer::tracer::{Buffer, Config, Status, Tracer};
-use clap::Parser;
+use bendy_tracer::tracer::{Buffer, ColorSpace, Config, RenderConfig, Status, Subsample, Tracer};
+use clap::{Parser, ValueEnum};
 use flate2::bufread::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -20,11 +20,33 @@ use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use rand::prelude::*;
 use rand_distr::Normal;
 
-const SAMPLES_STEP: usize = 8;
-const SAMPLES_BIG_STEP: usize = 64;
-const SAMPLES_VERY_BIG_STEP: usize = 1024;
-
 const DEFAULT_SCREENSHOT: &str = "render.png";
+
+#[derive(Debug, Default, Clone, Copy, ValueEnum)]
+enum Output {
+    #[default]
+    Full,
+    Albedo,
+    Normal,
+}
+
+impl Output {
+    fn into_output(self) -> bendy_tracer::tracer::Output {
+        match self {
+            Self::Full => bendy_tracer::tracer::Output::Full,
+            Self::Albedo => bendy_tracer::tracer::Output::Albedo,
+            Self::Normal => bendy_tracer::tracer::Output::Normal,
+        }
+    }
+
+    fn color_space(self) -> ColorSpace {
+        match self {
+            Self::Full => ColorSpace::SRgb,
+            Self::Albedo => ColorSpace::SRgb,
+            Self::Normal => ColorSpace::None,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[clap(author, version, about)]
@@ -35,8 +57,14 @@ struct Cli {
     #[clap(long, value_parser, default_value_t = 512)]
     height: usize,
 
+    #[clap(long, value_parser)]
+    output: Output,
+
     #[clap(long, value_parser, default_value_t = 64)]
-    max_samples: usize,
+    samples: usize,
+
+    #[clap(long, value_parser, default_value_t = 2)]
+    subsample: usize,
 
     #[clap(long, value_parser, default_value_os_t = PathBuf::from("screenshots/render.png"))]
     screenshot: PathBuf,
@@ -166,13 +194,20 @@ fn main() -> Result<(), Error> {
     update_queue.commit(&mut scene);
 
     let tracer = Tracer::with_config(Config {
+        output: args.output.into_output(),
         chunks_x: 8,
-        chunks_y: 8,
+        chunks_y: 4,
         ..Default::default()
     });
 
-    let mut buffer = Buffer::new(window_width, window_height);
-    let mut max_samples = args.max_samples;
+    let mut buffer = Buffer::new(window_width, window_height, args.output.color_space());
+    let max_samples = args.samples;
+    let subsample = match args.subsample {
+        0 | 1 => Subsample::None,
+        n => Subsample::Subpixel(n),
+    };
+    let mut last_samples = 0;
+    let mut sum_delta = Duration::ZERO;
 
     let mut start = None;
     let mut end = None;
@@ -182,11 +217,17 @@ fn main() -> Result<(), Error> {
         prev_frame = Instant::now();
 
         let samples = if buffer.samples() < max_samples { 1 } else { 0 };
-        let status = tracer.render(&scene, camera, samples, &mut buffer);
+        let status = tracer.render(
+            &scene,
+            camera,
+            &RenderConfig::with_samples_subsample(samples, subsample),
+            &mut buffer,
+        );
 
         // delta time of the render, not the entire loop
         let this_frame = Instant::now();
         let delta = this_frame - prev_frame;
+        sum_delta += delta;
 
         if status == Status::InProgress {
             let preview = buffer.preview();
@@ -201,30 +242,6 @@ fn main() -> Result<(), Error> {
             }
         } else if end.is_none() {
             end = Some(this_frame);
-        }
-        if window.is_key_pressed(Key::Q, KeyRepeat::No) {
-            let step = if window.is_key_down(Key::LeftShift) {
-                SAMPLES_VERY_BIG_STEP
-            } else if window.is_key_down(Key::LeftCtrl) {
-                SAMPLES_BIG_STEP
-            } else {
-                SAMPLES_STEP
-            };
-            max_samples = max_samples.saturating_sub(step).max(1);
-        }
-        if window.is_key_pressed(Key::E, KeyRepeat::No) {
-            let step = if window.is_key_down(Key::LeftShift) {
-                SAMPLES_VERY_BIG_STEP
-            } else if window.is_key_down(Key::LeftCtrl) {
-                SAMPLES_BIG_STEP
-            } else {
-                SAMPLES_STEP
-            };
-            max_samples = if max_samples == 1 {
-                step
-            } else {
-                max_samples + step
-            };
         }
         if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::P, KeyRepeat::No) {
             let path = &args.screenshot;
@@ -303,14 +320,34 @@ fn main() -> Result<(), Error> {
 
         update_queue.commit(&mut scene);
 
-        let samples = buffer.samples();
-        let seconds = delta.as_secs();
-        let millis = delta.as_millis() % 1_000;
-        let mut title = format!("bendy tracer; samples: {samples}/{max_samples}");
-        if seconds == 0 {
-            write!(&mut title, "; delta t: {millis}ms")?;
+        let total_samples = buffer.samples();
+        let samples = total_samples - last_samples;
+        last_samples = total_samples;
+
+        let delta = if samples != 0 {
+            Some(delta / (samples as u32))
         } else {
-            write!(&mut title, "; delta t: {seconds}s {millis}ms")?;
+            None
+        };
+
+        let mut title = format!("bendy tracer; samples: {total_samples}/{max_samples}");
+        if let Some(delta) = delta {
+            let seconds = delta.as_secs();
+            let millis = delta.as_millis() % 1_000;
+            if seconds == 0 {
+                write!(&mut title, "; delta t: {millis}ms")?;
+            } else {
+                write!(&mut title, "; delta t: {seconds}s {millis}ms")?;
+            }
+        } else {
+            let avg_delta = sum_delta / (total_samples as u32);
+            let seconds = avg_delta.as_secs();
+            let millis = avg_delta.as_millis() % 1_000;
+            if seconds == 0 {
+                write!(&mut title, "; avg t per sample: {millis}ms")?;
+            } else {
+                write!(&mut title, "; avg t per sample: {seconds}s {millis}ms")?;
+            }
         }
         if let (Some(start), Some(end)) = (start, end) {
             let total = end - start;

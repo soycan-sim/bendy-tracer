@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::LinearRgb;
 use crate::math::{Interpolate, UnitSphere};
+use crate::tracer::ColorData;
 use crate::tracer::Face;
 use crate::tracer::{Manifold, Ray};
 
@@ -28,7 +29,7 @@ impl Volume {
         rng: &mut R,
         manifold: &Manifold,
         step: f32,
-    ) -> (Option<Ray>, Option<LinearRgb>) {
+    ) -> (Option<Ray>, Option<ColorData>) {
         let offset = manifold.bbox.0;
         let size = manifold.bbox.1 - manifold.bbox.0;
         let coord = (manifold.position - offset) / size;
@@ -42,7 +43,15 @@ impl Volume {
             }
             let direction = UnitSphere.sample(rng);
             let ray = Ray::new(origin, direction);
-            (Some(ray), Some(LinearRgb::splat(0.8)))
+
+            let color_data = ColorData {
+                color: LinearRgb::splat(0.8),
+                albedo: LinearRgb::splat(0.8),
+                normal: manifold.normal,
+                depth: manifold.t,
+            };
+
+            (Some(ray), Some(color_data))
         } else {
             let origin = manifold.position;
             let direction = manifold.ray.direction;
