@@ -1,5 +1,6 @@
 use glam::{Vec3, Vec3A};
 use rand::prelude::*;
+use rand_distr::Uniform;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +47,61 @@ impl Default for Config {
 pub enum Subsample {
     #[default]
     None,
-    Subpixel(u32),
+    Subpixel(usize),
+}
+
+impl Subsample {
+    pub fn subpixel_size(&self) -> f32 {
+        match *self {
+            Subsample::None => 1.0,
+            Subsample::Subpixel(count) => (count as f32).recip(),
+        }
+    }
+
+    pub fn subpixel_count(&self) -> usize {
+        match *self {
+            Subsample::None => 1,
+            Subsample::Subpixel(count) => count * count,
+        }
+    }
+}
+
+impl IntoIterator for Subsample {
+    type Item = <SubsampleIntoIter as Iterator>::Item;
+    type IntoIter = SubsampleIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        SubsampleIntoIter {
+            subsample: self,
+            count: 0,
+        }
+    }
+}
+
+pub struct SubsampleIntoIter {
+    subsample: Subsample,
+    count: usize,
+}
+
+impl Iterator for SubsampleIntoIter {
+    type Item = (f32, f32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.subsample {
+            Subsample::None if self.count == 0 => {
+                self.count += 1;
+                Some((0.0, 0.0))
+            }
+            Subsample::Subpixel(count) if self.count < count * count => {
+                let width = (count as f32).recip();
+                let i = self.count % count;
+                let j = self.count / count;
+                self.count += 1;
+                Some((i as f32 * width, j as f32 * width))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -62,7 +117,6 @@ pub enum Output {
 pub struct RenderConfig {
     pub output: Output,
     pub subsample: Subsample,
-    pub deterministic: bool,
     pub samples: usize,
     pub max_bounces: Option<usize>,
     pub max_volume_bounces: Option<usize>,
@@ -73,7 +127,6 @@ impl RenderConfig {
     const DEFAULT: Self = Self {
         output: Output::Full,
         subsample: Subsample::None,
-        deterministic: false,
         samples: 64,
         max_bounces: None,
         max_volume_bounces: None,
@@ -142,7 +195,7 @@ impl Tracer {
             chunk_state.render_samples(scene, camera, chunk);
         });
 
-        buffer.inc_samples(config.samples);
+        buffer.inc_samples(config.samples * config.subsample.subpixel_count());
 
         Status::InProgress
     }
@@ -152,7 +205,6 @@ impl Tracer {
 struct ChunkConfig {
     pub output: Output,
     pub subsample: Subsample,
-    pub deterministic: bool,
     pub samples: usize,
     pub max_bounces: usize,
     pub max_volume_bounces: usize,
@@ -166,7 +218,6 @@ impl ChunkConfig {
         Self {
             output: render.output,
             subsample: render.subsample,
-            deterministic: render.deterministic,
             samples: render.samples,
             max_bounces: render.max_bounces.unwrap_or(main.max_bounces),
             max_volume_bounces: render.max_bounces.unwrap_or(main.max_volume_bounces),
@@ -198,32 +249,21 @@ impl ChunkState {
 
         let pixel_width = chunk.pixel_width();
         let pixel_height = chunk.pixel_height();
+        let subpixel_scale = self.config.subsample.subpixel_size();
 
         let scatter_u = {
-            let min = -0.5 * pixel_width;
-            let max = 0.5 * pixel_width;
-            rand::distributions::Uniform::from(min..max)
+            let min = -0.5 * pixel_width * subpixel_scale;
+            let max = 0.5 * pixel_width * subpixel_scale;
+            Uniform::from(min..max)
         };
 
         let scatter_v = {
-            let min = -0.5 * pixel_height;
-            let max = 0.5 * pixel_height;
-            rand::distributions::Uniform::from(min..max)
+            let min = -0.5 * pixel_height * subpixel_scale;
+            let max = 0.5 * pixel_height * subpixel_scale;
+            Uniform::from(min..max)
         };
 
         let scatter_defocus = UnitDisk::new(Vec3::NEG_Z);
-
-        let scatter = (0..self.config.samples)
-            .map(|_| {
-                let u = self.rng.sample(&scatter_u);
-                let v = self.rng.sample(&scatter_v);
-                (u, v)
-            })
-            .collect::<Vec<_>>();
-
-        let defocus = (0..self.config.samples)
-            .map(|_| self.rng.sample(&scatter_defocus))
-            .collect::<Vec<Vec3A>>();
 
         let mut chunk = chunk;
 
@@ -233,33 +273,37 @@ impl ChunkState {
             for x in chunk.range_x() {
                 let u = x as f32 * pixel_width - 1.0;
 
-                let mut sample = LinearRgb::BLACK;
+                for _ in 0..self.config.samples {
+                    for (u_sub, v_sub) in self.config.subsample {
+                        let u_offset = u_sub * pixel_width + self.rng.sample(&scatter_u);
+                        let v_offset = v_sub * pixel_height + self.rng.sample(&scatter_v);
 
-                for (&(u_offset, v_offset), &defocus) in scatter.iter().zip(&defocus) {
-                    let u = u + u_offset;
-                    let v = v + v_offset;
+                        let u = u + u_offset;
+                        let v = v + v_offset;
 
-                    let mut ray = Ray::with_frustum(yfov, xfov, u, v);
-                    if let Some(focus) = camera.focus {
-                        let aperture = 0.5 * camera.focal_length / camera.fstop;
-                        let defocus_offset = camera_obj
-                            .transform()
-                            .transform_vector3a(defocus * aperture);
+                        let mut ray = Ray::with_frustum(yfov, xfov, u, v);
+                        if let Some(focus) = camera.focus {
+                            let defocus = self.rng.sample::<Vec3A, _>(&scatter_defocus);
 
-                        let frac_f_z = focus / ray.direction.z.abs();
+                            let aperture = 0.5 * camera.focal_length / camera.fstop;
+                            let defocus_offset = camera_obj
+                                .transform()
+                                .transform_vector3a(defocus * aperture);
 
-                        ray = camera_obj.transform() * ray;
+                            let frac_f_z = focus / ray.direction.z.abs();
 
-                        ray.origin += defocus_offset;
-                        ray.direction = (ray.direction * frac_f_z - defocus_offset).normalize();
-                    } else {
-                        ray = camera_obj.transform() * ray;
+                            ray = camera_obj.transform() * ray;
+
+                            ray.origin += defocus_offset;
+                            ray.direction = (ray.direction * frac_f_z - defocus_offset).normalize();
+                        } else {
+                            ray = camera_obj.transform() * ray;
+                        }
+
+                        let sample = self.sample(&ray, scene, 0);
+                        chunk.add_samples(x, y, sample);
                     }
-
-                    sample += self.sample(&ray, scene, 0);
                 }
-
-                chunk.add_samples(x, y, sample);
             }
         }
     }
