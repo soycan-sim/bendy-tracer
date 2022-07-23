@@ -303,11 +303,15 @@ impl ChunkState {
 
                         let sample = self.sample(&ray, scene, 0);
 
+                        let depth = (sample.depth - self.config.clip_min)
+                            / (self.config.clip_max - self.config.clip_min);
+                        let depth = depth.clamp(0.0, 1.0);
+
                         match self.config.output {
                             Output::Full => chunk.write_color(x, y, sample.color),
                             Output::Albedo => chunk.write_color(x, y, sample.albedo),
                             Output::Normal => chunk.write_normal(x, y, sample.normal),
-                            Output::Depth => chunk.write_depth(x, y, sample.depth),
+                            Output::Depth => chunk.write_depth(x, y, depth),
                         }
                     }
                 }
