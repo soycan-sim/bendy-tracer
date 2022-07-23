@@ -1,7 +1,7 @@
 use std::mem;
 use std::ops::{Deref, Range};
 
-use glam::Vec3A;
+use glam::{Vec3, Vec3A};
 use image::{Rgba, Rgba32FImage, RgbaImage};
 
 use crate::color::{LinearRgb, Rgb};
@@ -11,6 +11,7 @@ const BLACK_ALPHA_ONE: Rgba<f32> = Rgba([0.0, 0.0, 0.0, 1.0]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorSpace {
     None,
+    Normal,
     Linear,
     SRgb,
 }
@@ -19,6 +20,10 @@ impl ColorSpace {
     pub fn convert_linear(self, linear: LinearRgb) -> Rgb {
         match self {
             Self::None | Self::Linear => linear.into(),
+            Self::Normal => {
+                let normal = Vec3::from(Rgb::from(linear)).normalize();
+                ((normal + Vec3::ONE) * 0.5).into()
+            }
             Self::SRgb => linear.to_srgb().into(),
         }
     }

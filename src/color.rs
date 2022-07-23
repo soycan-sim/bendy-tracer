@@ -1,5 +1,6 @@
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
+use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 fn srgb_to_linear(x: f32) -> f32 {
@@ -122,6 +123,26 @@ impl From<SRgb> for Rgb {
             r: c.r,
             g: c.g,
             b: c.b,
+        }
+    }
+}
+
+impl From<Vec3> for Rgb {
+    fn from(v: Vec3) -> Self {
+        Self {
+            r: v.x,
+            g: v.y,
+            b: v.z,
+        }
+    }
+}
+
+impl From<Rgb> for Vec3 {
+    fn from(c: Rgb) -> Self {
+        Self {
+            x: c.r,
+            y: c.g,
+            z: c.b,
         }
     }
 }

@@ -43,7 +43,7 @@ impl Output {
         match self {
             Self::Full => ColorSpace::SRgb,
             Self::Albedo => ColorSpace::SRgb,
-            Self::Normal => ColorSpace::None,
+            Self::Normal => ColorSpace::Normal,
         }
     }
 }
