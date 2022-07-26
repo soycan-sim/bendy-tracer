@@ -63,6 +63,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "approx",
+ "bitflags",
  "clap",
  "flate2",
  "glam",

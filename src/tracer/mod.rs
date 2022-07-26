@@ -4,7 +4,7 @@ use rand_distr::Uniform;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
-use crate::math::UnitDisk;
+use crate::math::distr::UnitDisk;
 use crate::scene::{DataRef, ObjectRef, Scene};
 
 mod buffer;
@@ -372,16 +372,27 @@ impl ChunkState {
         }
     }
 
-    fn try_hit(&mut self, ray: &Ray, scene: &Scene) -> Option<Manifold> {
-        let mut result = None;
-
-        let mut clip = Clip {
+    fn clip(&self) -> Clip {
+        Clip {
             min: self.config.clip_min,
             max: self.config.clip_max,
-        };
+        }
+    }
+
+    fn clip_volumetric(&self) -> Clip {
+        Clip {
+            min: 0.0,
+            max: self.config.volume_step,
+        }
+    }
+
+    fn try_hit<'a>(&mut self, ray: &Ray, scene: &'a Scene) -> Option<Manifold<'a>> {
+        let mut result = None;
+
+        let mut clip = self.clip();
 
         for object in scene.iter() {
-            if let Some(manifold) = object.hit(ray, &clip) {
+            if let Some(manifold) = object.hit(ray, &clip, scene) {
                 clip.max = manifold.t;
                 result = Some(manifold);
             }
@@ -390,24 +401,21 @@ impl ChunkState {
         result
     }
 
-    fn try_hit_volume(
+    fn try_hit_volume<'a>(
         &mut self,
         ray: &Ray,
-        scene: &Scene,
+        scene: &'a Scene,
         last_object: ObjectRef,
-    ) -> Option<Manifold> {
+    ) -> Option<Manifold<'a>> {
         let mut result = None;
 
-        let mut clip = Clip {
-            min: 0.0,
-            max: self.config.volume_step,
-        };
+        let mut clip = self.clip_volumetric();
 
         for (object_ref, object) in scene.pairs() {
             let manifold = if object_ref == last_object {
-                object.hit_volumetric(ray, &clip)
+                object.hit_volumetric(ray, &clip, scene)
             } else {
-                object.hit(ray, &clip)
+                object.hit(ray, &clip, scene)
             };
             if let Some(manifold) = manifold {
                 clip.max = manifold.t;
@@ -431,11 +439,16 @@ impl ChunkState {
             object_ref: None,
             mat_ref: None,
             vol_ref: None,
+            scene,
         };
 
-        let (_, attenuation) = material.shade(&mut self.rng, &manifold);
+        let clip = self.clip();
+        let emitted = material.emitted(&mut self.rng, &manifold);
+        let data = material.shade(&mut self.rng, &manifold, &clip);
 
-        attenuation.unwrap_or_default()
+        let mut color_data = data.albedo.unwrap_or_default();
+        color_data.color += emitted;
+        color_data
     }
 
     fn sample_surface(
@@ -450,18 +463,26 @@ impl ChunkState {
             .as_material()
             .expect("expected material data");
 
-        let (ray, mut attenuation) = material.shade(&mut self.rng, manifold);
+        let clip = self.clip();
+        let emitted = material.emitted(&mut self.rng, manifold);
+        let data = material.shade(&mut self.rng, manifold, &clip);
+        let mut attenuation = data.albedo;
 
-        if let Some(ray) = ray {
+        if let Some(ray) = data.scatter {
             let reflected = self.sample(&ray, scene, bounce + 1);
             if let Some(attenuation) = &mut attenuation {
-                attenuation.color *= reflected.color;
+                attenuation.color *= material.pdf(manifold, &ray);
+                attenuation.color *= reflected.color / data.pdf;
             } else {
                 attenuation = Some(reflected);
             }
-        }
 
-        attenuation.unwrap_or_default()
+            let mut color_data = attenuation.unwrap_or_default();
+            color_data.color += emitted;
+            color_data
+        } else {
+            ColorData::from_emitted(emitted)
+        }
     }
 
     fn sample_volume(

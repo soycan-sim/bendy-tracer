@@ -1,9 +1,11 @@
+use bitflags::bitflags;
 use glam::{Affine3A, Quat, Vec3A};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::tracer::{Clip, Manifold, Ray};
 
-use super::{Update, UpdateQueue};
+use super::{Scene, Update, UpdateQueue};
 
 mod camera;
 mod sphere;
@@ -14,6 +16,13 @@ use self::transform::{Space, Transform};
 pub use self::camera::Camera;
 pub use self::sphere::Sphere;
 
+bitflags! {
+    #[derive(Default, Serialize, Deserialize)]
+    pub struct ObjectFlags: u32 {
+        const LIGHT = 0x1;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ObjectRef(pub(super) u64);
 
@@ -21,6 +30,7 @@ pub struct ObjectRef(pub(super) u64);
 pub struct Object {
     pub(super) object_ref: Option<ObjectRef>,
     tag: Option<String>,
+    flags: ObjectFlags,
     transform: Transform,
     inner: ObjectKind,
     children: Option<Vec<ObjectRef>>,
@@ -34,6 +44,7 @@ impl Object {
         Self {
             object_ref: None,
             tag: None,
+            flags: ObjectFlags::empty(),
             transform: Default::default(),
             inner: ObjectKind::from(object),
             children: None,
@@ -42,6 +53,13 @@ impl Object {
 
     pub fn empty() -> Self {
         Self::new(())
+    }
+
+    pub fn with_flags(self, flags: ObjectFlags) -> Self {
+        Self {
+            flags: self.flags.union(flags),
+            ..self
+        }
     }
 
     pub fn with_tag(self, tag: String) -> Self {
@@ -77,6 +95,18 @@ impl Object {
         &mut self.inner
     }
 
+    pub fn flags(&self) -> ObjectFlags {
+        self.flags
+    }
+
+    pub fn has_flags(&self, flags: ObjectFlags) -> bool {
+        self.flags.contains(flags)
+    }
+
+    pub fn set_flags(&mut self, flags: ObjectFlags) {
+        self.flags.insert(flags);
+    }
+
     pub fn tag(&self) -> Option<&str> {
         self.tag.as_deref()
     }
@@ -106,25 +136,52 @@ impl Object {
         }
     }
 
-    pub fn hit(&self, ray: &Ray, clip: &Clip) -> Option<Manifold> {
+    pub fn random_point<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3A {
+        match self.inner() {
+            ObjectKind::Sphere(sphere) => sphere.random_point(rng, self.transform().translation),
+            _ => self.transform().translation,
+        }
+    }
+
+    pub fn pdf(&self, ray: &Ray, clip: &Clip, scene: &Scene) -> Option<f32> {
+        match self.inner() {
+            ObjectKind::Sphere(sphere) => sphere.pdf(
+                self.object_ref.expect("can't hit-test orphan objects"),
+                self.transform().translation,
+                ray,
+                clip,
+                scene,
+            ),
+            _ => None,
+        }
+    }
+
+    pub fn hit<'a>(&self, ray: &Ray, clip: &Clip, scene: &'a Scene) -> Option<Manifold<'a>> {
         match self.inner() {
             ObjectKind::Sphere(sphere) => sphere.hit(
                 self.object_ref.expect("can't hit-test orphan objects"),
                 self.transform().translation,
                 ray,
                 clip,
+                scene,
             ),
             _ => None,
         }
     }
 
-    pub fn hit_volumetric(&self, ray: &Ray, clip: &Clip) -> Option<Manifold> {
+    pub fn hit_volumetric<'a>(
+        &self,
+        ray: &Ray,
+        clip: &Clip,
+        scene: &'a Scene,
+    ) -> Option<Manifold<'a>> {
         match self.inner() {
             ObjectKind::Sphere(sphere) => sphere.hit_volumetric(
                 self.object_ref.expect("can't hit-test orphan objects"),
                 self.transform().translation,
                 ray,
                 clip,
+                scene,
             ),
             _ => None,
         }
@@ -135,7 +192,7 @@ impl Object {
 
         let transform = *self.transform.get(Space::World);
         for child in self.children() {
-            update_queue.push(Update::object(child, move |object, update_queue| {
+            update_queue.push(Update::object(child, move |object, update_queue, _| {
                 let affine = transform;
                 object.apply_parent_transform(update_queue, &affine);
             }))
@@ -148,7 +205,7 @@ impl Object {
 
         let transform = *self.transform.get(Space::World);
         for child in self.children() {
-            update_queue.push(Update::object(child, move |object, update_queue| {
+            update_queue.push(Update::object(child, move |object, update_queue, _| {
                 let affine = transform;
                 object.apply_parent_transform(update_queue, &affine);
             }))
@@ -157,7 +214,7 @@ impl Object {
 
     pub fn add(&mut self, update_queue: &mut UpdateQueue, child: ObjectRef) {
         let transform = *self.transform.get(Space::World);
-        update_queue.push(Update::object(child, move |object, update_queue| {
+        update_queue.push(Update::object(child, move |object, update_queue, _| {
             let affine = transform;
             object.apply_parent_transform(update_queue, &affine);
         }));

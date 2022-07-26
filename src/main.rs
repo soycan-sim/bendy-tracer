@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Error};
 use bendy_tracer::color::LinearRgb;
 use bendy_tracer::scene::{
-    Camera, Data, DensityMap, Material, Object, Scene, Sphere, Update, UpdateQueue, Volume,
+    Camera, Data, DensityMap, Material, Object, ObjectFlags, Scene, Sphere, Update, UpdateQueue,
+    Volume,
 };
 use bendy_tracer::tracer::{Buffer, ColorSpace, Config, RenderConfig, Status, Subsample, Tracer};
 use clap::{Parser, ValueEnum};
@@ -178,7 +179,9 @@ fn main() -> Result<(), Error> {
             Object::new(Sphere::new(mat_red, 0.5)).with_translation(Vec3A::new(-0.8, 0.5, -3.0)),
         );
         scene.add_object(
-            Object::new(Sphere::new(mat_light, 0.5)).with_translation(Vec3A::new(1.0, 3.0, -1.0)),
+            Object::new(Sphere::new(mat_light, 0.5))
+                .with_translation(Vec3A::new(1.0, 3.0, -1.0))
+                .with_flags(ObjectFlags::LIGHT),
         );
 
         scene
@@ -187,7 +190,7 @@ fn main() -> Result<(), Error> {
     let mut camera = scene.find_by_tag("camera").unwrap();
 
     let mut update_queue = UpdateQueue::new();
-    update_queue.push(Update::object(camera, move |object, _| {
+    update_queue.push(Update::object(camera, move |object, _, _| {
         let aspect_ratio = window_width as f32 / window_height as f32;
         object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
     }));
@@ -297,7 +300,7 @@ fn main() -> Result<(), Error> {
 
             camera = scene.find_by_tag("camera").unwrap();
 
-            update_queue.push(Update::object(camera, move |object, _| {
+            update_queue.push(Update::object(camera, move |object, _, _| {
                 let aspect_ratio = window_width as f32 / window_height as f32;
                 object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
             }));
@@ -312,7 +315,7 @@ fn main() -> Result<(), Error> {
             buffer.resize(window_width, window_height);
             window_buffer.resize(window_width * window_height, 0);
 
-            update_queue.push(Update::object(camera, move |object, _| {
+            update_queue.push(Update::object(camera, move |object, _, _| {
                 let aspect_ratio = window_width as f32 / window_height as f32;
                 object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
             }));
