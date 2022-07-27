@@ -8,18 +8,15 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Error};
 use bendy_tracer::color::LinearRgb;
 use bendy_tracer::scene::{
-    Camera, Data, DensityMap, Material, Object, ObjectFlags, Scene, Sphere, Update, UpdateQueue,
-    Volume,
+    Camera, Cuboid, Data, Material, Object, ObjectFlags, Rect, Scene, Update, UpdateQueue,
 };
 use bendy_tracer::tracer::{Buffer, ColorSpace, Config, RenderConfig, Status, Subsample, Tracer};
 use clap::{Parser, ValueEnum};
 use flate2::bufread::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use glam::{Affine3A, Quat, Vec3, Vec3A};
+use glam::{Affine3A, EulerRot, Quat, Vec3, Vec3A};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
-use rand::prelude::*;
-use rand_distr::Normal;
 
 const DEFAULT_SCREENSHOT: &str = "render.png";
 
@@ -110,78 +107,106 @@ fn main() -> Result<(), Error> {
     } else {
         let mut scene = Scene::default();
 
-        let mat_root = scene.add_data(Data::new(Material::emissive(LinearRgb::WHITE, 0.1)));
-        let mat_light = scene.add_data(Data::new(Material::emissive(LinearRgb::WHITE, 10.0)));
+        let mat_light = scene.add_data(Data::new(Material::emissive(LinearRgb::WHITE, 20.0)));
+        let mat_white = scene.add_data(Data::new(Material::diffuse(LinearRgb::splat(0.73), 1.0)));
         let mat_red = scene.add_data(Data::new(Material::diffuse(
             LinearRgb::new(0.7, 0.1, 0.1),
             0.5,
         )));
-        let mat_blue = scene.add_data(Data::new(Material::diffuse(
-            LinearRgb::new(0.3, 0.4, 0.6),
+        let mat_green = scene.add_data(Data::new(Material::diffuse(
+            LinearRgb::new(0.2, 0.7, 0.4),
             0.8,
         )));
 
-        let mut rng = SmallRng::from_entropy();
-
-        let vol_cloud = scene.add_data(Data::new(Volume::from(DensityMap::with_func(
-            16,
-            16,
-            16,
-            |x, y, z| {
-                let x = x as f32 / 7.5 - 1.0;
-                let y = y as f32 / 7.5 - 1.0;
-                let z = z as f32 / 7.5 - 1.0;
-                let r = 0.75;
-                let density = {
-                    let dist = (x * x + y * y + z * z).sqrt();
-                    if dist > r {
-                        0.0
-                    } else {
-                        10.0 * (1.0 - dist).powf(3.0)
-                    }
-                };
-                let random = rng
-                    .sample::<f32, _>(Normal::new(0.15, 0.25).unwrap())
-                    .max(0.0);
-                density * random
-            },
-        ))));
-
-        scene.set_root_material(mat_root);
-
         scene.add_object(
             Object::new(Camera {
-                focal_length: 0.085,
+                focal_length: 0.05,
                 fstop: 1.4,
-                focus: Some(12.0),
+                focus: Some(12.5),
                 ..Default::default()
             })
             .with_tag("camera".to_string())
+            .with_translation(Vec3A::new(0.0, 2.5, 10.0)),
+        );
+        // left
+        scene.add_object(
+            Object::new(Rect::new(
+                mat_green,
+                Vec3A::new(0.0, 0.0, -2.5),
+                Vec3A::new(0.0, 2.5, 0.0),
+            ))
+            .with_translation(Vec3A::new(-2.5, 2.5, -2.5)),
+        );
+        // right
+        scene.add_object(
+            Object::new(Rect::new(
+                mat_red,
+                Vec3A::new(0.0, 0.0, 2.5),
+                Vec3A::new(0.0, 2.5, 0.0),
+            ))
+            .with_translation(Vec3A::new(2.5, 2.5, -2.5)),
+        );
+        // back
+        scene.add_object(
+            Object::new(Rect::new(
+                mat_white,
+                Vec3A::new(2.5, 0.0, 0.0),
+                Vec3A::new(0.0, 2.5, 0.0),
+            ))
+            .with_translation(Vec3A::new(0.0, 2.5, -5.0)),
+        );
+        // floor
+        scene.add_object(
+            Object::new(Rect::new(
+                mat_white,
+                Vec3A::new(2.5, 0.0, 0.0),
+                Vec3A::new(0.0, 0.0, -2.5),
+            ))
+            .with_translation(Vec3A::new(0.0, 0.0, -2.5)),
+        );
+        // ceiling
+        scene.add_object(
+            Object::new(Rect::new(
+                mat_white,
+                Vec3A::new(2.5, 0.0, 0.0),
+                Vec3A::new(0.0, 0.0, 2.5),
+            ))
+            .with_translation(Vec3A::new(0.0, 5.0, -2.5)),
+        );
+        scene.add_object(
+            Object::new(Rect::new(
+                mat_light,
+                Vec3A::new(0.5, 0.0, 0.0),
+                Vec3A::new(0.0, 0.0, 0.5),
+            ))
+            .with_translation(Vec3A::new(0.0, 4.999, -2.5))
+            .with_flags(ObjectFlags::LIGHT),
+        );
+
+        // tall box
+        let angle = 20_f32.to_radians();
+        scene.add_object(
+            Object::new(Cuboid::new(
+                mat_white,
+                Vec3A::new(0.5, 0.0, 0.0),
+                Vec3A::new(0.0, 1.0, 0.0),
+                Vec3A::new(0.0, 0.0, 0.4),
+            ))
             .with_transform(Affine3A::from_rotation_translation(
-                Quat::from_euler(
-                    glam::EulerRot::YXZ,
-                    10_f32.to_radians(),
-                    -11_f32.to_radians(),
-                    0.0,
-                ),
-                Vec3::new(2.4, 2.7, 12.0),
+                Quat::from_euler(EulerRot::YXZ, angle, 0.0, 0.0),
+                Vec3::new(-1.2, 1.0, -3.2),
             )),
         );
+
+        // short box
         scene.add_object(
-            Object::new(Sphere::new(mat_blue, 100.0))
-                .with_translation(Vec3A::new(0.0, -101.0, 0.0)),
-        );
-        scene.add_object(
-            Object::new(Sphere::new_volumetric(mat_red, vol_cloud, 1.0))
-                .with_translation(Vec3A::new(0.0, 0.1, 0.0)),
-        );
-        scene.add_object(
-            Object::new(Sphere::new(mat_red, 0.5)).with_translation(Vec3A::new(-0.8, 0.5, -3.0)),
-        );
-        scene.add_object(
-            Object::new(Sphere::new(mat_light, 0.5))
-                .with_translation(Vec3A::new(1.0, 3.0, -1.0))
-                .with_flags(ObjectFlags::LIGHT),
+            Object::new(Cuboid::new(
+                mat_white,
+                Vec3A::new(0.5, 0.0, 0.0),
+                Vec3A::new(0.0, 0.6, 0.0),
+                Vec3A::new(0.0, 0.0, 0.5),
+            ))
+            .with_translation(Vec3A::new(1.0, 0.6, -1.4)),
         );
 
         scene
