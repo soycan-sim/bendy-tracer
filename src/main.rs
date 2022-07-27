@@ -109,6 +109,7 @@ fn main() -> Result<(), Error> {
 
         let mat_light = scene.add_data(Data::new(Material::emissive(LinearRgb::WHITE, 20.0)));
         let mat_white = scene.add_data(Data::new(Material::diffuse(LinearRgb::splat(0.73), 1.0)));
+        let mat_metal = scene.add_data(Data::new(Material::metallic(LinearRgb::splat(0.55), 0.01)));
         let mat_red = scene.add_data(Data::new(Material::diffuse(
             LinearRgb::new(0.7, 0.1, 0.1),
             0.5,
@@ -187,7 +188,7 @@ fn main() -> Result<(), Error> {
         let angle = 20_f32.to_radians();
         scene.add_object(
             Object::new(Cuboid::new(
-                mat_white,
+                mat_metal,
                 Vec3A::new(0.5, 0.0, 0.0),
                 Vec3A::new(0.0, 1.0, 0.0),
                 Vec3A::new(0.0, 0.0, 0.4),

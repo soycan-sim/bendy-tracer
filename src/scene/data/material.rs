@@ -52,6 +52,10 @@ impl Material {
         Self::Diffuse { albedo, roughness }
     }
 
+    pub const fn metallic(albedo: LinearRgb, roughness: f32) -> Self {
+        Self::Metallic { albedo, roughness }
+    }
+
     pub const fn glass(albedo: LinearRgb, roughness: f32, ior: f32) -> Self {
         Self::Glass {
             albedo,
