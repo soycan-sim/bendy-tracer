@@ -8,12 +8,16 @@ use crate::tracer::{Clip, Manifold, Ray};
 use super::{Scene, Update, UpdateQueue};
 
 mod camera;
+mod cuboid;
+mod rect;
 mod sphere;
 mod transform;
 
 use self::transform::{Space, Transform};
 
 pub use self::camera::Camera;
+pub use self::cuboid::Cuboid;
+pub use self::rect::Rect;
 pub use self::sphere::Sphere;
 
 bitflags! {
@@ -132,6 +136,8 @@ impl Object {
     pub fn bounding_box(&self) -> Option<(Vec3A, Vec3A)> {
         match self.inner() {
             ObjectKind::Sphere(sphere) => Some(sphere.bounding_box(self.transform().translation)),
+            ObjectKind::Rect(rect) => Some(rect.bounding_box(self.transform())),
+            ObjectKind::Cuboid(cuboid) => Some(cuboid.bounding_box(self.transform())),
             _ => None,
         }
     }
@@ -139,32 +145,36 @@ impl Object {
     pub fn random_point<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3A {
         match self.inner() {
             ObjectKind::Sphere(sphere) => sphere.random_point(rng, self.transform().translation),
+            ObjectKind::Rect(rect) => rect.random_point(rng, self.transform()),
+            ObjectKind::Cuboid(cuboid) => cuboid.random_point(rng, self.transform()),
             _ => self.transform().translation,
         }
     }
 
     pub fn pdf(&self, ray: &Ray, clip: &Clip, scene: &Scene) -> Option<f32> {
+        let object_ref = self.object_ref.expect("can't hit-test orphan objects");
         match self.inner() {
-            ObjectKind::Sphere(sphere) => sphere.pdf(
-                self.object_ref.expect("can't hit-test orphan objects"),
-                self.transform().translation,
-                ray,
-                clip,
-                scene,
-            ),
+            ObjectKind::Sphere(sphere) => {
+                sphere.pdf(object_ref, self.transform().translation, ray, clip, scene)
+            }
+            ObjectKind::Rect(rect) => rect.pdf(object_ref, self.transform(), ray, clip, scene),
+            ObjectKind::Cuboid(cuboid) => {
+                cuboid.pdf(object_ref, self.transform(), ray, clip, scene)
+            }
             _ => None,
         }
     }
 
     pub fn hit<'a>(&self, ray: &Ray, clip: &Clip, scene: &'a Scene) -> Option<Manifold<'a>> {
+        let object_ref = self.object_ref.expect("can't hit-test orphan objects");
         match self.inner() {
-            ObjectKind::Sphere(sphere) => sphere.hit(
-                self.object_ref.expect("can't hit-test orphan objects"),
-                self.transform().translation,
-                ray,
-                clip,
-                scene,
-            ),
+            ObjectKind::Sphere(sphere) => {
+                sphere.hit(object_ref, self.transform().translation, ray, clip, scene)
+            }
+            ObjectKind::Rect(rect) => rect.hit(object_ref, self.transform(), ray, clip, scene),
+            ObjectKind::Cuboid(cuboid) => {
+                cuboid.hit(object_ref, self.transform(), ray, clip, scene)
+            }
             _ => None,
         }
     }
@@ -234,13 +244,15 @@ impl Object {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ObjectKind {
     #[default]
     Empty,
     Camera(Camera),
     Sphere(Sphere),
+    Rect(Rect),
+    Cuboid(Cuboid),
 }
 
 impl From<()> for ObjectKind {
@@ -258,5 +270,17 @@ impl From<Camera> for ObjectKind {
 impl From<Sphere> for ObjectKind {
     fn from(sphere: Sphere) -> Self {
         Self::Sphere(sphere)
+    }
+}
+
+impl From<Rect> for ObjectKind {
+    fn from(rect: Rect) -> Self {
+        Self::Rect(rect)
+    }
+}
+
+impl From<Cuboid> for ObjectKind {
+    fn from(cuboid: Cuboid) -> Self {
+        Self::Cuboid(cuboid)
     }
 }
