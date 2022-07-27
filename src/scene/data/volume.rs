@@ -1,11 +1,10 @@
 use glam::{IVec3, Vec3A};
-use rand::prelude::*;
 use rand::Rng;
 use rand_distr::Standard;
 use serde::{Deserialize, Serialize};
 
 use crate::color::LinearRgb;
-use crate::math::{Interpolate, UnitSphere};
+use crate::math::{distr::UnitSphere, Interpolate};
 use crate::tracer::ColorData;
 use crate::tracer::Face;
 use crate::tracer::{Manifold, Ray};
@@ -41,7 +40,7 @@ impl Volume {
             if manifold.face == Face::Volume {
                 origin -= manifold.ray.direction * step * rng.sample::<f32, _>(Standard);
             }
-            let direction = UnitSphere.sample(rng);
+            let direction = rng.sample(UnitSphere);
             let ray = Ray::new(origin, direction);
 
             let color_data = ColorData {

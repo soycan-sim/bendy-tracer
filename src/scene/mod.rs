@@ -14,7 +14,7 @@ pub use self::data::*;
 pub use self::object::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Collection<K: Eq + Hash, V> {
+pub struct Collection<K: Eq + Hash, V> {
     collection: HashMap<K, V>,
     next_key: u64,
 }
@@ -36,13 +36,17 @@ impl<K: Eq + Hash, V> Collection<K, V> {
         self.collection.values()
     }
 
+    fn iter_mut(&mut self) -> impl Iterator<Item = &'_ mut V> {
+        self.collection.values_mut()
+    }
+
     pub fn pairs(&self) -> impl Iterator<Item = (&'_ K, &'_ V)> {
         self.collection.iter()
     }
 }
 
-type ObjectCollection = Collection<ObjectRef, Object>;
-type DataCollection = Collection<DataRef, Data>;
+pub type ObjectCollection = Collection<ObjectRef, Object>;
+pub type DataCollection = Collection<DataRef, Data>;
 
 impl ObjectCollection {
     pub fn add(&mut self, mut value: Object) -> ObjectRef {
@@ -180,8 +184,12 @@ impl UpdateQueue {
                         .objects
                         .get_mut(&object_ref)
                         .expect("invalid object ref");
-                    func(object, &mut update_queue);
+                    func(object, &mut update_queue, &scene.data);
                 }
+                Update::AllObjects(mut func) => scene
+                    .objects
+                    .iter_mut()
+                    .for_each(|object| func(object, &mut update_queue, &scene.data)),
             }
         }
 
@@ -204,18 +212,29 @@ impl UpdateQueue {
     }
 }
 
-pub type ObjectUpdate = dyn FnOnce(&mut Object, &mut UpdateQueue) + Send + Sync + 'static;
+pub type ObjectUpdate =
+    dyn FnOnce(&mut Object, &mut UpdateQueue, &DataCollection) + Send + Sync + 'static;
+pub type ObjectUpdateAll =
+    dyn FnMut(&mut Object, &mut UpdateQueue, &DataCollection) + Send + Sync + 'static;
 
 pub enum Update {
     Object(ObjectRef, Box<ObjectUpdate>),
+    AllObjects(Box<ObjectUpdateAll>),
 }
 
 impl Update {
     pub fn object<F>(object_ref: ObjectRef, f: F) -> Self
     where
-        F: FnOnce(&mut Object, &mut UpdateQueue) + Send + Sync + 'static,
+        F: FnOnce(&mut Object, &mut UpdateQueue, &DataCollection) + Send + Sync + 'static,
     {
         Self::Object(object_ref, Box::new(f))
+    }
+
+    pub fn all_objects<F>(f: F) -> Self
+    where
+        F: FnMut(&mut Object, &mut UpdateQueue, &DataCollection) + Send + Sync + 'static,
+    {
+        Self::AllObjects(Box::new(f))
     }
 }
 
@@ -232,7 +251,7 @@ mod tests {
 
         let mut update_queue = UpdateQueue::default();
 
-        update_queue.push(Update::object(object_ref, |object, update_queue| {
+        update_queue.push(Update::object(object_ref, |object, update_queue, _| {
             object.apply_transform(
                 update_queue,
                 Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0)),

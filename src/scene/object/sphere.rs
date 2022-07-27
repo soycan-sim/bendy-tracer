@@ -1,7 +1,11 @@
+use std::f32;
+
 use glam::Vec3A;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::scene::{DataRef, ObjectRef};
+use crate::math::distr::UnitSphere;
+use crate::scene::{DataRef, ObjectRef, Scene};
 use crate::tracer::{Clip, Face, Manifold, Ray};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -33,13 +37,37 @@ impl Sphere {
         (translation - half_size, translation + half_size)
     }
 
-    fn generate_volume_manifold(
+    pub fn random_point<R: Rng + ?Sized>(&self, rng: &mut R, translation: Vec3A) -> Vec3A {
+        translation + rng.sample::<Vec3A, _>(UnitSphere) * self.radius
+    }
+
+    pub fn pdf(
         &self,
+        object_ref: ObjectRef,
+        translation: Vec3A,
+        ray: &Ray,
+        clip: &Clip,
+        scene: &Scene,
+    ) -> Option<f32> {
+        if let Some(manifold) = self.hit(object_ref, translation, ray, clip, scene) {
+            let r = self.radius;
+            let shadow = f32::consts::PI * r * r;
+            let dist_sqr = manifold.t * manifold.t;
+
+            Some(dist_sqr / shadow)
+        } else {
+            None
+        }
+    }
+
+    fn generate_volume_manifold<'a>(
+        &self,
+        scene: &'a Scene,
         object_ref: ObjectRef,
         translation: Vec3A,
         ray: Ray,
         t: f32,
-    ) -> Manifold {
+    ) -> Manifold<'a> {
         Manifold {
             position: ray.at(t),
             normal: Vec3A::ZERO,
@@ -50,16 +78,18 @@ impl Sphere {
             object_ref: Some(object_ref),
             mat_ref: Some(self.material),
             vol_ref: self.volume,
+            scene,
         }
     }
 
-    fn generate_surface_manifold(
+    fn generate_surface_manifold<'a>(
         &self,
+        scene: &'a Scene,
         object_ref: ObjectRef,
         translation: Vec3A,
         ray: Ray,
         t: f32,
-    ) -> Manifold {
+    ) -> Manifold<'a> {
         let (front_face, back_face) = if self.volume.is_some() {
             (Face::VolumeFront, Face::VolumeBack)
         } else {
@@ -84,16 +114,18 @@ impl Sphere {
             object_ref: Some(object_ref),
             mat_ref: Some(self.material),
             vol_ref: self.volume,
+            scene,
         }
     }
 
-    pub fn hit(
+    pub fn hit<'a>(
         &self,
         object_ref: ObjectRef,
         translation: Vec3A,
         ray: &Ray,
         clip: &Clip,
-    ) -> Option<Manifold> {
+        scene: &'a Scene,
+    ) -> Option<Manifold<'a>> {
         let oc = ray.origin - translation;
         let half_b = oc.dot(ray.direction);
         let c = oc.length_squared() - self.radius * self.radius;
@@ -112,23 +144,24 @@ impl Sphere {
             }
         }
 
-        Some(self.generate_surface_manifold(object_ref, translation, *ray, t))
+        Some(self.generate_surface_manifold(scene, object_ref, translation, *ray, t))
     }
 
-    pub fn hit_volumetric(
+    pub fn hit_volumetric<'a>(
         &self,
         object_ref: ObjectRef,
         translation: Vec3A,
         ray: &Ray,
         clip: &Clip,
-    ) -> Option<Manifold> {
+        scene: &'a Scene,
+    ) -> Option<Manifold<'a>> {
         let t = clip.max;
         let dist_sqr = ray.at(t).distance_squared(translation);
         let r_sqr = self.radius * self.radius;
         if dist_sqr <= r_sqr {
-            return Some(self.generate_volume_manifold(object_ref, translation, *ray, t));
+            return Some(self.generate_volume_manifold(scene, object_ref, translation, *ray, t));
         }
 
-        self.hit(object_ref, translation, ray, clip)
+        self.hit(object_ref, translation, ray, clip, scene)
     }
 }

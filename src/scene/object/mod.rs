@@ -1,18 +1,31 @@
+use bitflags::bitflags;
 use glam::{Affine3A, Quat, Vec3A};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::tracer::{Clip, Manifold, Ray};
 
-use super::{Update, UpdateQueue};
+use super::{Scene, Update, UpdateQueue};
 
 mod camera;
+mod cuboid;
+mod rect;
 mod sphere;
 mod transform;
 
 use self::transform::{Space, Transform};
 
 pub use self::camera::Camera;
+pub use self::cuboid::Cuboid;
+pub use self::rect::Rect;
 pub use self::sphere::Sphere;
+
+bitflags! {
+    #[derive(Default, Serialize, Deserialize)]
+    pub struct ObjectFlags: u32 {
+        const LIGHT = 0x1;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ObjectRef(pub(super) u64);
@@ -21,6 +34,7 @@ pub struct ObjectRef(pub(super) u64);
 pub struct Object {
     pub(super) object_ref: Option<ObjectRef>,
     tag: Option<String>,
+    flags: ObjectFlags,
     transform: Transform,
     inner: ObjectKind,
     children: Option<Vec<ObjectRef>>,
@@ -34,6 +48,7 @@ impl Object {
         Self {
             object_ref: None,
             tag: None,
+            flags: ObjectFlags::empty(),
             transform: Default::default(),
             inner: ObjectKind::from(object),
             children: None,
@@ -42,6 +57,13 @@ impl Object {
 
     pub fn empty() -> Self {
         Self::new(())
+    }
+
+    pub fn with_flags(self, flags: ObjectFlags) -> Self {
+        Self {
+            flags: self.flags.union(flags),
+            ..self
+        }
     }
 
     pub fn with_tag(self, tag: String) -> Self {
@@ -77,6 +99,18 @@ impl Object {
         &mut self.inner
     }
 
+    pub fn flags(&self) -> ObjectFlags {
+        self.flags
+    }
+
+    pub fn has_flags(&self, flags: ObjectFlags) -> bool {
+        self.flags.contains(flags)
+    }
+
+    pub fn set_flags(&mut self, flags: ObjectFlags) {
+        self.flags.insert(flags);
+    }
+
     pub fn tag(&self) -> Option<&str> {
         self.tag.as_deref()
     }
@@ -102,29 +136,62 @@ impl Object {
     pub fn bounding_box(&self) -> Option<(Vec3A, Vec3A)> {
         match self.inner() {
             ObjectKind::Sphere(sphere) => Some(sphere.bounding_box(self.transform().translation)),
+            ObjectKind::Rect(rect) => Some(rect.bounding_box(self.transform())),
+            ObjectKind::Cuboid(cuboid) => Some(cuboid.bounding_box(self.transform())),
             _ => None,
         }
     }
 
-    pub fn hit(&self, ray: &Ray, clip: &Clip) -> Option<Manifold> {
+    pub fn random_point<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3A {
         match self.inner() {
-            ObjectKind::Sphere(sphere) => sphere.hit(
-                self.object_ref.expect("can't hit-test orphan objects"),
-                self.transform().translation,
-                ray,
-                clip,
-            ),
+            ObjectKind::Sphere(sphere) => sphere.random_point(rng, self.transform().translation),
+            ObjectKind::Rect(rect) => rect.random_point(rng, self.transform()),
+            ObjectKind::Cuboid(cuboid) => cuboid.random_point(rng, self.transform()),
+            _ => self.transform().translation,
+        }
+    }
+
+    pub fn pdf(&self, ray: &Ray, clip: &Clip, scene: &Scene) -> Option<f32> {
+        let object_ref = self.object_ref.expect("can't hit-test orphan objects");
+        match self.inner() {
+            ObjectKind::Sphere(sphere) => {
+                sphere.pdf(object_ref, self.transform().translation, ray, clip, scene)
+            }
+            ObjectKind::Rect(rect) => rect.pdf(object_ref, self.transform(), ray, clip, scene),
+            ObjectKind::Cuboid(cuboid) => {
+                cuboid.pdf(object_ref, self.transform(), ray, clip, scene)
+            }
             _ => None,
         }
     }
 
-    pub fn hit_volumetric(&self, ray: &Ray, clip: &Clip) -> Option<Manifold> {
+    pub fn hit<'a>(&self, ray: &Ray, clip: &Clip, scene: &'a Scene) -> Option<Manifold<'a>> {
+        let object_ref = self.object_ref.expect("can't hit-test orphan objects");
+        match self.inner() {
+            ObjectKind::Sphere(sphere) => {
+                sphere.hit(object_ref, self.transform().translation, ray, clip, scene)
+            }
+            ObjectKind::Rect(rect) => rect.hit(object_ref, self.transform(), ray, clip, scene),
+            ObjectKind::Cuboid(cuboid) => {
+                cuboid.hit(object_ref, self.transform(), ray, clip, scene)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn hit_volumetric<'a>(
+        &self,
+        ray: &Ray,
+        clip: &Clip,
+        scene: &'a Scene,
+    ) -> Option<Manifold<'a>> {
         match self.inner() {
             ObjectKind::Sphere(sphere) => sphere.hit_volumetric(
                 self.object_ref.expect("can't hit-test orphan objects"),
                 self.transform().translation,
                 ray,
                 clip,
+                scene,
             ),
             _ => None,
         }
@@ -135,7 +202,7 @@ impl Object {
 
         let transform = *self.transform.get(Space::World);
         for child in self.children() {
-            update_queue.push(Update::object(child, move |object, update_queue| {
+            update_queue.push(Update::object(child, move |object, update_queue, _| {
                 let affine = transform;
                 object.apply_parent_transform(update_queue, &affine);
             }))
@@ -148,7 +215,7 @@ impl Object {
 
         let transform = *self.transform.get(Space::World);
         for child in self.children() {
-            update_queue.push(Update::object(child, move |object, update_queue| {
+            update_queue.push(Update::object(child, move |object, update_queue, _| {
                 let affine = transform;
                 object.apply_parent_transform(update_queue, &affine);
             }))
@@ -157,7 +224,7 @@ impl Object {
 
     pub fn add(&mut self, update_queue: &mut UpdateQueue, child: ObjectRef) {
         let transform = *self.transform.get(Space::World);
-        update_queue.push(Update::object(child, move |object, update_queue| {
+        update_queue.push(Update::object(child, move |object, update_queue, _| {
             let affine = transform;
             object.apply_parent_transform(update_queue, &affine);
         }));
@@ -177,13 +244,15 @@ impl Object {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ObjectKind {
     #[default]
     Empty,
     Camera(Camera),
     Sphere(Sphere),
+    Rect(Rect),
+    Cuboid(Cuboid),
 }
 
 impl From<()> for ObjectKind {
@@ -201,5 +270,17 @@ impl From<Camera> for ObjectKind {
 impl From<Sphere> for ObjectKind {
     fn from(sphere: Sphere) -> Self {
         Self::Sphere(sphere)
+    }
+}
+
+impl From<Rect> for ObjectKind {
+    fn from(rect: Rect) -> Self {
+        Self::Rect(rect)
+    }
+}
+
+impl From<Cuboid> for ObjectKind {
+    fn from(cuboid: Cuboid) -> Self {
+        Self::Cuboid(cuboid)
     }
 }
