@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use serde::{Deserialize, Serialize};
 
 mod material;
@@ -6,8 +8,7 @@ mod volume;
 pub use self::material::*;
 pub use self::volume::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct DataRef(pub(super) u64);
+pub type DataRef = Rc<Data>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
@@ -15,13 +16,13 @@ pub struct Data {
 }
 
 impl Data {
-    pub fn new<T>(data: T) -> Self
+    pub fn new<T>(data: T) -> Rc<Self>
     where
         DataKind: From<T>,
     {
-        Self {
+        Rc::new(Self {
             inner: DataKind::from(data),
-        }
+        })
     }
 
     pub fn inner(&self) -> &DataKind {

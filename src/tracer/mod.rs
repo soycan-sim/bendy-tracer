@@ -4,8 +4,12 @@ use rand_distr::Uniform;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
+use crate::bvh::Aabb;
+use crate::bvh::Bvh;
+use crate::material::MaterialRef;
+use crate::material::Materials;
 use crate::math::distr::UnitDisk;
-use crate::scene::{DataRef, ObjectRef, Scene};
+use crate::scene::Object;
 
 mod buffer;
 mod ray;
@@ -13,7 +17,7 @@ mod ray;
 pub use self::buffer::*;
 pub use self::ray::*;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub max_bounces: usize,
     pub max_volume_bounces: usize,
@@ -114,7 +118,7 @@ pub enum Output {
     Depth,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderConfig {
     pub subsample: Subsample,
     pub samples: usize,
@@ -162,24 +166,28 @@ pub enum Status {
     InProgress,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Tracer {
     pub config: Config,
+    pub materials: Materials,
 }
 
 impl Tracer {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(materials: Materials) -> Self {
+        Self {
+            config: Default::default(),
+            materials,
+        }
     }
 
-    pub fn with_config(config: Config) -> Self {
-        Self { config }
+    pub fn with_config(materials: Materials, config: Config) -> Self {
+        Self { config, materials }
     }
 
     pub fn render(
         &self,
-        scene: &Scene,
-        camera: ObjectRef,
+        bvh: &Bvh,
+        camera: &Object,
         config: &RenderConfig,
         buffer: &mut Buffer,
     ) -> Status {
@@ -192,8 +200,11 @@ impl Tracer {
             .collect::<Vec<_>>();
 
         chunks.into_par_iter().for_each(|chunk| {
-            let mut chunk_state = ChunkState::new(ChunkConfig::with_configs(&self.config, config));
-            chunk_state.render_samples(scene, camera, chunk);
+            let mut chunk_state = ChunkState::new(
+                ChunkConfig::with_configs(&self.config, config),
+                &self.materials,
+            );
+            chunk_state.render_samples(bvh, camera, chunk);
         });
 
         buffer.inc_samples(config.samples * config.subsample.subpixel_count());
@@ -202,7 +213,7 @@ impl Tracer {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ChunkConfig {
     pub output: Output,
     pub subsample: Subsample,
@@ -230,19 +241,24 @@ impl ChunkConfig {
 }
 
 #[derive(Debug)]
-pub struct ChunkState {
+pub struct ChunkState<'mat> {
     config: ChunkConfig,
-    pub rng: SmallRng,
+    materials: &'mat Materials,
+    rng: SmallRng,
 }
 
-impl ChunkState {
-    fn new(config: ChunkConfig) -> Self {
+impl<'mat> ChunkState<'mat> {
+    fn new(config: ChunkConfig, materials: &'mat Materials) -> Self {
         let rng = SmallRng::from_entropy();
-        Self { config, rng }
+        Self {
+            config,
+            materials,
+            rng,
+        }
     }
 
-    fn render_samples<'a>(&mut self, scene: &Scene, camera: ObjectRef, chunk: Chunk<'a>) {
-        let camera_obj = scene.get_object(camera);
+    fn render_samples<'a>(&mut self, bvh: &Bvh, camera: &Object, chunk: Chunk<'a>) {
+        let camera_obj = camera;
         let camera = camera_obj.as_camera().expect("expected a camera object");
 
         let yfov = 2.0 * camera.sensor_size.atan2(2.0 * camera.focal_length);
@@ -301,7 +317,7 @@ impl ChunkState {
                             ray = camera_obj.transform() * ray;
                         }
 
-                        let sample = self.sample(&ray, scene, 0);
+                        let sample = self.sample(&ray, bvh, 0);
 
                         let depth = (sample.depth - self.config.clip_min)
                             / (self.config.clip_max - self.config.clip_min);
@@ -319,56 +335,42 @@ impl ChunkState {
         }
     }
 
-    fn sample(&mut self, ray: &Ray, scene: &Scene, bounce: usize) -> ColorData {
+    fn sample(&mut self, ray: &Ray, bvh: &Bvh, bounce: usize) -> ColorData {
         if bounce > self.config.max_bounces {
             return Default::default();
         }
 
-        if let Some(manifold) = self.try_hit(ray, scene) {
-            if manifold.face.is_surface() {
-                match manifold.mat_ref {
-                    Some(mat_ref) => self.sample_surface(scene, &manifold, mat_ref, bounce),
-                    None => Default::default(),
-                }
+        if let Some(manifold) = bvh.hit(ray, &self.clip()) {
+            let material = self.materials.get(manifold.material);
+
+            let clip = self.clip();
+            let data = material.shade(
+                &mut self.rng,
+                &manifold,
+                &clip,
+                self.config.volume_step,
+                bvh,
+            );
+
+            if let Some(ray) = data.scatter {
+                let reflected = self.sample(&ray, bvh, bounce + 1);
+                let mut attenuation = if let Some(mut attenuation) = data.color {
+                    attenuation.color *= material.pdf(&manifold, &ray);
+                    attenuation.color *= reflected.color / data.pdf;
+                    attenuation
+                } else {
+                    reflected
+                };
+
+                attenuation.color += attenuation.emitted;
+                attenuation
             } else {
-                match manifold.vol_ref {
-                    Some(vol_ref) => self.sample_volume(scene, &manifold, vol_ref, bounce, 0),
-                    None => Default::default(),
-                }
+                let mut attenuation = data.color.unwrap_or_default();
+                attenuation.color += attenuation.emitted;
+                attenuation
             }
         } else {
-            self.sample_root(ray, scene)
-        }
-    }
-
-    fn sample_volumetric(
-        &mut self,
-        ray: &Ray,
-        scene: &Scene,
-        last_object: ObjectRef,
-        bounce: usize,
-        volume_bounce: usize,
-    ) -> ColorData {
-        if volume_bounce > self.config.max_volume_bounces {
-            return Default::default();
-        }
-
-        if let Some(manifold) = self.try_hit_volume(ray, scene, last_object) {
-            if manifold.face.is_surface() {
-                match manifold.mat_ref {
-                    Some(mat_ref) => self.sample_surface(scene, &manifold, mat_ref, bounce),
-                    None => Default::default(),
-                }
-            } else {
-                match manifold.vol_ref {
-                    Some(vol_ref) => {
-                        self.sample_volume(scene, &manifold, vol_ref, bounce, volume_bounce)
-                    }
-                    None => Default::default(),
-                }
-            }
-        } else {
-            self.sample_root(ray, scene)
+            self.sample_root(ray, bvh)
         }
     }
 
@@ -386,139 +388,30 @@ impl ChunkState {
         }
     }
 
-    fn try_hit<'a>(&mut self, ray: &Ray, scene: &'a Scene) -> Option<Manifold<'a>> {
-        let mut result = None;
-
-        let mut clip = self.clip();
-
-        for object in scene.iter() {
-            if let Some(manifold) = object.hit(ray, &clip, scene) {
-                clip.max = manifold.t;
-                result = Some(manifold);
-            }
-        }
-
-        result
-    }
-
-    fn try_hit_volume<'a>(
-        &mut self,
-        ray: &Ray,
-        scene: &'a Scene,
-        last_object: ObjectRef,
-    ) -> Option<Manifold<'a>> {
-        let mut result = None;
-
-        let mut clip = self.clip_volumetric();
-
-        for (object_ref, object) in scene.pairs() {
-            let manifold = if object_ref == last_object {
-                object.hit_volumetric(ray, &clip, scene)
-            } else {
-                object.hit(ray, &clip, scene)
-            };
-            if let Some(manifold) = manifold {
-                clip.max = manifold.t;
-                result = Some(manifold);
-            }
-        }
-
-        result
-    }
-
-    fn sample_root(&mut self, ray: &Ray, scene: &Scene) -> ColorData {
-        let material = scene.root_material();
+    fn sample_root(&mut self, ray: &Ray, bvh: &Bvh) -> ColorData {
+        let material = self.materials.root();
 
         let manifold = Manifold {
             position: ray.at(self.config.clip_max),
             normal: -ray.direction,
-            bbox: (Vec3A::splat(f32::NEG_INFINITY), Vec3A::splat(f32::INFINITY)),
+            aabb: Aabb::new(Vec3A::splat(f32::NEG_INFINITY), Vec3A::splat(f32::INFINITY)),
             face: Face::Volume,
             t: self.config.clip_max,
             ray: *ray,
-            object_ref: None,
-            mat_ref: None,
-            vol_ref: None,
-            scene,
+            material: MaterialRef::root(),
         };
 
         let clip = self.clip();
-        let emitted = material.emitted(&mut self.rng, &manifold);
-        let data = material.shade(&mut self.rng, &manifold, &clip);
+        let data = material.shade(
+            &mut self.rng,
+            &manifold,
+            &clip,
+            self.config.volume_step,
+            bvh,
+        );
 
-        let mut color_data = data.albedo.unwrap_or_default();
-        color_data.color += emitted;
+        let mut color_data = data.color.unwrap_or_default();
+        color_data.color += color_data.emitted;
         color_data
-    }
-
-    fn sample_surface(
-        &mut self,
-        scene: &Scene,
-        manifold: &Manifold,
-        mat_ref: DataRef,
-        bounce: usize,
-    ) -> ColorData {
-        let material = scene
-            .get_data(mat_ref)
-            .as_material()
-            .expect("expected material data");
-
-        let clip = self.clip();
-        let emitted = material.emitted(&mut self.rng, manifold);
-        let data = material.shade(&mut self.rng, manifold, &clip);
-        let mut attenuation = data.albedo;
-
-        if let Some(ray) = data.scatter {
-            let reflected = self.sample(&ray, scene, bounce + 1);
-            if let Some(attenuation) = &mut attenuation {
-                attenuation.color *= material.pdf(manifold, &ray);
-                attenuation.color *= reflected.color / data.pdf;
-            } else {
-                attenuation = Some(reflected);
-            }
-
-            let mut color_data = attenuation.unwrap_or_default();
-            color_data.color += emitted;
-            color_data
-        } else {
-            ColorData::from_emitted(emitted)
-        }
-    }
-
-    fn sample_volume(
-        &mut self,
-        scene: &Scene,
-        manifold: &Manifold,
-        vol_ref: DataRef,
-        bounce: usize,
-        volume_bounce: usize,
-    ) -> ColorData {
-        let volume = scene
-            .get_data(vol_ref)
-            .as_volume()
-            .expect("expected volume data");
-
-        let (ray, mut attenuation) = volume.shade(&mut self.rng, manifold, self.config.volume_step);
-
-        if let Some(ray) = ray {
-            let reflected = if manifold.face == Face::VolumeBack {
-                self.sample(&ray, scene, bounce + 1)
-            } else {
-                self.sample_volumetric(
-                    &ray,
-                    scene,
-                    manifold.object_ref.unwrap(),
-                    bounce,
-                    volume_bounce + 1,
-                )
-            };
-            if let Some(attenuation) = &mut attenuation {
-                attenuation.color *= reflected.color;
-            } else {
-                attenuation = Some(reflected);
-            }
-        }
-
-        attenuation.unwrap_or_default()
     }
 }
