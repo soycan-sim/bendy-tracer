@@ -47,8 +47,12 @@ impl Sphere {
     }
 
     pub fn hit(&self, object: &ObjectData, ray: &Ray, clip: &Clip) -> Option<Manifold> {
-        let oc = ray.origin - object.transform.translation;
-        let half_b = oc.dot(ray.direction);
+        let transform_inv = object.transform.inverse();
+        let origin = transform_inv.transform_point3a(ray.origin);
+        let direction = transform_inv.transform_vector3a(ray.direction).normalize();
+
+        let oc = origin;
+        let half_b = oc.dot(direction);
         let c = oc.length_squared() - self.radius * self.radius;
 
         let discriminant = half_b * half_b - c;
@@ -65,14 +69,18 @@ impl Sphere {
             }
         }
 
+        let position = origin + direction * t;
+        let normal = position / self.radius;
+
         let position = ray.at(t);
-        let normal = (position - object.transform.translation) / self.radius;
+        let normal = object.transform.transform_vector3a(normal).normalize();
 
         let (normal, face) = if ray.direction.dot(normal) < 0.0 {
             (normal, Face::Front)
         } else {
             (-normal, Face::Back)
         };
+
         Some(Manifold {
             position,
             normal,

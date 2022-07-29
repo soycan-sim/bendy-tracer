@@ -97,8 +97,8 @@ impl Rect {
         transform.transform_point3a(self.x * x + self.y * y)
     }
 
-    pub(crate) fn pdf_impl(&self, transform: &Affine3A, ray: &Ray, clip: &Clip) -> Option<f32> {
-        if let Some(manifold) = self.hit_impl(transform, ray, clip) {
+    pub fn pdf(&self, object: &ObjectData, ray: &Ray, clip: &Clip) -> Option<f32> {
+        if let Some(manifold) = self.hit(object, ray, clip) {
             let shadow = self.area() * ray.direction.dot(manifold.normal).abs();
             let dist_sqr = manifold.t * manifold.t;
 
@@ -108,54 +108,48 @@ impl Rect {
         }
     }
 
-    pub fn pdf(&self, object: &ObjectData, ray: &Ray, clip: &Clip) -> Option<f32> {
-        self.pdf_impl(&object.transform, ray, clip)
-    }
+    pub fn hit(&self, object: &ObjectData, ray: &Ray, clip: &Clip) -> Option<Manifold> {
+        let transform_inv = object.transform.inverse();
+        let origin = transform_inv.transform_point3a(ray.origin);
+        let direction = transform_inv.transform_vector3a(ray.direction).normalize();
 
-    pub(crate) fn hit_impl(
-        &self,
-        transform: &Affine3A,
-        ray: &Ray,
-        clip: &Clip,
-    ) -> Option<Manifold> {
-        let translation = transform.translation;
-        let normal = transform.transform_vector3a(self.z);
+        let normal = self.z;
 
-        let q = ray.direction.dot(normal);
+        let q = direction.dot(normal);
         if q.abs() <= 1e-5 {
             return None;
         }
 
-        let p = (translation - ray.origin).dot(normal);
+        let p = (-origin).dot(normal);
         let t = p / q;
         if t < clip.min || t > clip.max {
             return None;
         }
 
-        let position = ray.at(t);
+        let position = origin + direction * t;
 
-        if !self.contains_point(transform.inverse().transform_point3a(position)) {
+        if !self.contains_point(position) {
             return None;
         }
 
-        let (normal, face) = if p < 0.0 {
+        let position = ray.at(t);
+        let normal = object.transform.transform_vector3a(normal).normalize();
+
+        let (normal, face) = if q < 0.0 {
             (normal, Face::Front)
         } else {
             (-normal, Face::Back)
         };
+
         Some(Manifold {
             position,
             normal,
-            aabb: self.bounding_box(transform),
+            aabb: self.bounding_box(&object.transform),
             face,
             t,
             ray: *ray,
             material: self.material,
         })
-    }
-
-    pub fn hit(&self, object: &ObjectData, ray: &Ray, clip: &Clip) -> Option<Manifold> {
-        self.hit_impl(&object.transform, ray, clip)
     }
 }
 
