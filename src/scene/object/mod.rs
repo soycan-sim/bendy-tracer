@@ -1,17 +1,14 @@
 use bitflags::bitflags;
 use glam::{Affine3A, Quat, Vec3A};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
-
-use crate::tracer::{Clip, Manifold, Ray};
-
-use super::{Scene, Update, UpdateQueue};
 
 mod camera;
 mod cuboid;
 mod rect;
 mod sphere;
 mod transform;
+
+use crate::bvh::{ObjectData, Shape};
 
 use self::transform::{Space, Transform};
 
@@ -21,23 +18,26 @@ pub use self::rect::Rect;
 pub use self::sphere::Sphere;
 
 bitflags! {
-    #[derive(Default, Serialize, Deserialize)]
+    #[derive(Serialize, Deserialize)]
     pub struct ObjectFlags: u32 {
         const LIGHT = 0x1;
+        const VISIBLE = 0x2;
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ObjectRef(pub(super) u64);
+impl Default for ObjectFlags {
+    fn default() -> Self {
+        ObjectFlags::VISIBLE
+    }
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Object {
-    pub(super) object_ref: Option<ObjectRef>,
     tag: Option<String>,
     flags: ObjectFlags,
     transform: Transform,
     inner: ObjectKind,
-    children: Option<Vec<ObjectRef>>,
+    children: Option<Vec<Object>>,
 }
 
 impl Object {
@@ -46,9 +46,8 @@ impl Object {
         ObjectKind: From<T>,
     {
         Self {
-            object_ref: None,
             tag: None,
-            flags: ObjectFlags::empty(),
+            flags: ObjectFlags::default(),
             transform: Default::default(),
             inner: ObjectKind::from(object),
             children: None,
@@ -119,6 +118,23 @@ impl Object {
         self.transform.get(Space::World)
     }
 
+    pub fn find_by_tag(&self, tag: &str) -> Option<&Self> {
+        if self.tag.as_deref() == Some(tag) {
+            Some(self)
+        } else {
+            self.iter().find_map(|object| object.find_by_tag(tag))
+        }
+    }
+
+    pub fn find_by_tag_mut(&mut self, tag: &str) -> Option<&mut Self> {
+        if self.tag.as_deref() == Some(tag) {
+            Some(self)
+        } else {
+            self.iter_mut()
+                .find_map(|object| object.find_by_tag_mut(tag))
+        }
+    }
+
     pub fn as_camera(&self) -> Option<&Camera> {
         match self.inner() {
             ObjectKind::Camera(camera) => Some(camera),
@@ -133,114 +149,63 @@ impl Object {
         }
     }
 
-    pub fn bounding_box(&self) -> Option<(Vec3A, Vec3A)> {
-        match self.inner() {
-            ObjectKind::Sphere(sphere) => Some(sphere.bounding_box(self.transform().translation)),
-            ObjectKind::Rect(rect) => Some(rect.bounding_box(self.transform())),
-            ObjectKind::Cuboid(cuboid) => Some(cuboid.bounding_box(self.transform())),
-            _ => None,
-        }
-    }
-
-    pub fn random_point<R: Rng + ?Sized>(&self, rng: &mut R) -> Vec3A {
-        match self.inner() {
-            ObjectKind::Sphere(sphere) => sphere.random_point(rng, self.transform().translation),
-            ObjectKind::Rect(rect) => rect.random_point(rng, self.transform()),
-            ObjectKind::Cuboid(cuboid) => cuboid.random_point(rng, self.transform()),
-            _ => self.transform().translation,
-        }
-    }
-
-    pub fn pdf(&self, ray: &Ray, clip: &Clip, scene: &Scene) -> Option<f32> {
-        let object_ref = self.object_ref.expect("can't hit-test orphan objects");
-        match self.inner() {
-            ObjectKind::Sphere(sphere) => {
-                sphere.pdf(object_ref, self.transform().translation, ray, clip, scene)
-            }
-            ObjectKind::Rect(rect) => rect.pdf(object_ref, self.transform(), ray, clip, scene),
-            ObjectKind::Cuboid(cuboid) => {
-                cuboid.pdf(object_ref, self.transform(), ray, clip, scene)
-            }
-            _ => None,
-        }
-    }
-
-    pub fn hit<'a>(&self, ray: &Ray, clip: &Clip, scene: &'a Scene) -> Option<Manifold<'a>> {
-        let object_ref = self.object_ref.expect("can't hit-test orphan objects");
-        match self.inner() {
-            ObjectKind::Sphere(sphere) => {
-                sphere.hit(object_ref, self.transform().translation, ray, clip, scene)
-            }
-            ObjectKind::Rect(rect) => rect.hit(object_ref, self.transform(), ray, clip, scene),
-            ObjectKind::Cuboid(cuboid) => {
-                cuboid.hit(object_ref, self.transform(), ray, clip, scene)
-            }
-            _ => None,
-        }
-    }
-
-    pub fn hit_volumetric<'a>(
-        &self,
-        ray: &Ray,
-        clip: &Clip,
-        scene: &'a Scene,
-    ) -> Option<Manifold<'a>> {
-        match self.inner() {
-            ObjectKind::Sphere(sphere) => sphere.hit_volumetric(
-                self.object_ref.expect("can't hit-test orphan objects"),
-                self.transform().translation,
-                ray,
-                clip,
-                scene,
-            ),
-            _ => None,
-        }
-    }
-
-    fn apply_parent_transform(&mut self, update_queue: &mut UpdateQueue, affine: &Affine3A) {
+    fn apply_parent_transform(&mut self, affine: &Affine3A) {
         self.transform.set_parent(*affine);
 
-        let transform = *self.transform.get(Space::World);
-        for child in self.children() {
-            update_queue.push(Update::object(child, move |object, update_queue, _| {
-                let affine = transform;
-                object.apply_parent_transform(update_queue, &affine);
-            }))
+        let world = *self.transform.get(Space::World);
+
+        for child in self.iter_mut() {
+            child.apply_parent_transform(&world);
         }
     }
 
-    pub fn apply_transform(&mut self, update_queue: &mut UpdateQueue, affine: Affine3A) {
+    pub fn apply_transform(&mut self, affine: Affine3A) {
         let transform = self.transform.get(Space::Local);
         self.transform.set(Space::Local, *transform * affine);
 
-        let transform = *self.transform.get(Space::World);
-        for child in self.children() {
-            update_queue.push(Update::object(child, move |object, update_queue, _| {
-                let affine = transform;
-                object.apply_parent_transform(update_queue, &affine);
-            }))
+        let world = *self.transform.get(Space::World);
+
+        for child in self.iter_mut() {
+            child.apply_parent_transform(&world);
         }
     }
 
-    pub fn add(&mut self, update_queue: &mut UpdateQueue, child: ObjectRef) {
-        let transform = *self.transform.get(Space::World);
-        update_queue.push(Update::object(child, move |object, update_queue, _| {
-            let affine = transform;
-            object.apply_parent_transform(update_queue, &affine);
-        }));
-
-        match self.children {
-            Some(ref mut children) => children.push(child),
-            None => self.children = Some(vec![child]),
-        }
+    pub fn add(&mut self, child: Object) {
+        self.children.get_or_insert_with(Vec::new).push(child);
     }
 
-    pub fn children(&self) -> impl Iterator<Item = ObjectRef> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = &'_ Object> {
+        self.children.iter().flat_map(|children| children.iter())
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &'_ mut Object> {
         self.children
-            .as_ref()
-            .map(|children| children.iter().copied())
-            .into_iter()
-            .flatten()
+            .iter_mut()
+            .flat_map(|children| children.iter_mut())
+    }
+
+    pub fn build(&self) -> Option<ObjectData> {
+        if !self.has_flags(ObjectFlags::VISIBLE) {
+            return None;
+        }
+
+        let flags = self.flags;
+        let tag = self.tag.clone();
+        let transform = *self.transform.get(Space::World);
+
+        let shape = match self.inner() {
+            ObjectKind::Sphere(sphere) => Shape::Sphere(From::from(sphere)),
+            ObjectKind::Rect(rect) => Shape::Rect(From::from(rect)),
+            ObjectKind::Cuboid(cuboid) => Shape::Cuboid(From::from(cuboid)),
+            _ => return None,
+        };
+
+        Some(ObjectData {
+            flags,
+            tag,
+            transform,
+            shape,
+        })
     }
 }
 

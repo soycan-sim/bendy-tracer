@@ -3,6 +3,8 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
+use crate::math::Interpolate;
+
 fn srgb_to_linear(x: f32) -> f32 {
     if x <= 0.04045 {
         x / 12.92
@@ -43,6 +45,16 @@ macro_rules! impl_rgb {
 
             pub fn to_bytes(self) -> [u8; 3] {
                 <[u8; 3]>::from(self)
+            }
+        }
+
+        impl Interpolate for $t {
+            fn lerp(self, other: Self, factor: f32) -> Self {
+                Self::new(
+                    self.r.lerp(other.r, factor),
+                    self.g.lerp(other.g, factor),
+                    self.b.lerp(other.b, factor),
+                )
             }
         }
 

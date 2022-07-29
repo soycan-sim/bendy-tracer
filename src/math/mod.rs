@@ -6,6 +6,17 @@ pub trait Interpolate {
     fn lerp(self, other: Self, factor: f32) -> Self;
 }
 
+impl<T: Interpolate> Interpolate for Option<T> {
+    fn lerp(self, other: Self, factor: f32) -> Self {
+        match (self, other) {
+            (None, None) => None,
+            (Some(x), None) => Some(x),
+            (None, Some(y)) => Some(y),
+            (Some(x), Some(y)) => Some(x.lerp(y, factor)),
+        }
+    }
+}
+
 impl Interpolate for f32 {
     fn lerp(self, other: Self, factor: f32) -> Self {
         self + (other - self) * factor

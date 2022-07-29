@@ -1,32 +1,23 @@
 use std::f32;
 
-use approx::AbsDiffEq;
 use glam::Vec3A;
 use rand::prelude::*;
 use rand_distr::Uniform;
 use serde::{Deserialize, Serialize};
 
+use crate::bvh::{Bvh, ObjectData};
 use crate::color::LinearRgb;
 use crate::math::distr::{Cosine, UnitHemisphere};
 use crate::math::{Interpolate, Vec3Ext};
-use crate::scene::{ObjectFlags, ObjectRef};
-use crate::tracer::{Clip, ColorData, ManifoldLegacy, Ray};
+use crate::scene::ObjectFlags;
+use crate::tracer::{Clip, ColorData, Manifold, Ray};
 
-#[derive(Debug, Clone, Copy)]
-pub struct ShaderData {
-    pub scatter: Option<Ray>,
-    pub albedo: Option<ColorData>,
-    pub pdf: f32,
-}
+use super::ShaderData;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum Material {
-    Flat {
-        albedo: LinearRgb,
-    },
+pub enum Surface {
     Diffuse {
         albedo: LinearRgb,
-        roughness: f32,
     },
     Metallic {
         albedo: LinearRgb,
@@ -43,103 +34,62 @@ pub enum Material {
     },
 }
 
-impl Material {
-    pub const fn flat(albedo: LinearRgb) -> Self {
-        Self::Flat { albedo }
-    }
-
-    pub const fn diffuse(albedo: LinearRgb, roughness: f32) -> Self {
-        Self::Diffuse { albedo, roughness }
-    }
-
-    pub const fn metallic(albedo: LinearRgb, roughness: f32) -> Self {
-        Self::Metallic { albedo, roughness }
-    }
-
-    pub const fn glass(albedo: LinearRgb, roughness: f32, ior: f32) -> Self {
-        Self::Glass {
-            albedo,
-            roughness,
-            ior,
-        }
-    }
-
-    pub const fn emissive(albedo: LinearRgb, intensity: f32) -> Self {
-        Self::Emissive { albedo, intensity }
-    }
-
-    pub fn emitted<R: Rng + ?Sized>(&self, _rng: &mut R, _manifold: &ManifoldLegacy) -> LinearRgb {
-        match *self {
-            Material::Diffuse { .. } | Material::Metallic { .. } | Material::Glass { .. } => {
-                LinearRgb::BLACK
-            }
-            Material::Flat { albedo } => albedo,
-            Material::Emissive { albedo, intensity } => albedo * intensity,
-        }
-    }
-
+impl Surface {
     pub fn shade<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
-        manifold: &ManifoldLegacy,
+        manifold: &Manifold,
         clip: &Clip,
+        bvh: &Bvh,
     ) -> ShaderData {
         match *self {
-            Material::Flat { .. } => ShaderData {
-                scatter: None,
-                albedo: Some(ColorData {
-                    color: LinearRgb::BLACK,
-                    albedo: LinearRgb::BLACK,
-                    normal: manifold.normal,
-                    depth: manifold.t,
-                }),
-                pdf: 1.0,
-            },
-            Material::Diffuse { albedo, .. } => {
+            Surface::Diffuse { albedo } => {
                 let color_data = ColorData {
                     color: albedo,
                     albedo,
+                    emitted: LinearRgb::BLACK,
                     normal: manifold.normal,
                     depth: manifold.t,
                 };
 
-                let count = manifold
-                    .scene
+                let count = bvh
                     .iter()
                     .filter(|object| object.has_flags(ObjectFlags::LIGHT))
                     .count();
 
                 let index = rng.sample::<usize, _>(Uniform::new(0, count));
 
-                let (light, _) = manifold
-                    .scene
-                    .pairs()
-                    .filter(|(_, object)| object.has_flags(ObjectFlags::LIGHT))
+                let light = bvh
+                    .iter()
+                    .filter(|object| object.has_flags(ObjectFlags::LIGHT))
                     .nth(index)
                     .unwrap();
 
-                // TODO: optimize this allocation
-                let pdf = Pdf::Mix(Box::new(Pdf::Diffuse), Box::new(Pdf::Light(light)), 0.5);
+                let light = Pdf::Light(light);
+                let pdf = Pdf::Mix(&Pdf::Diffuse, &light, 0.5);
                 let ray = pdf.scatter(rng, manifold);
 
                 if let Some(pdf) = pdf.pdf(&ray, manifold, clip) {
                     ShaderData {
+                        is_volume: false,
                         scatter: Some(ray),
-                        albedo: Some(color_data),
+                        color: Some(color_data),
                         pdf,
                     }
                 } else {
                     ShaderData {
+                        is_volume: false,
                         scatter: None,
-                        albedo: Some(color_data),
+                        color: Some(color_data),
                         pdf: 1.0,
                     }
                 }
             }
-            Material::Metallic { albedo, roughness } => {
+            Surface::Metallic { albedo, roughness } => {
                 let color_data = ColorData {
                     color: albedo,
                     albedo,
+                    emitted: LinearRgb::BLACK,
                     normal: manifold.normal,
                     depth: manifold.t,
                 };
@@ -149,19 +99,21 @@ impl Material {
 
                 if let Some(pdf) = pdf.pdf(&ray, manifold, clip) {
                     ShaderData {
+                        is_volume: false,
                         scatter: Some(ray),
-                        albedo: Some(color_data),
+                        color: Some(color_data),
                         pdf,
                     }
                 } else {
                     ShaderData {
+                        is_volume: false,
                         scatter: None,
-                        albedo: Some(color_data),
+                        color: Some(color_data),
                         pdf: 1.0,
                     }
                 }
             }
-            Material::Glass {
+            Surface::Glass {
                 albedo,
                 roughness,
                 ior,
@@ -169,6 +121,7 @@ impl Material {
                 let color_data = ColorData {
                     color: albedo,
                     albedo,
+                    emitted: LinearRgb::BLACK,
                     normal: manifold.normal,
                     depth: manifold.t,
                 };
@@ -178,48 +131,56 @@ impl Material {
 
                 if let Some(pdf) = pdf.pdf(&ray, manifold, clip) {
                     ShaderData {
+                        is_volume: false,
                         scatter: Some(ray),
-                        albedo: Some(color_data),
+                        color: Some(color_data),
                         pdf,
                     }
                 } else {
                     ShaderData {
+                        is_volume: false,
                         scatter: None,
-                        albedo: Some(color_data),
+                        color: Some(color_data),
                         pdf: 1.0,
                     }
                 }
             }
-            Material::Emissive { .. } => ShaderData {
+            Surface::Emissive { albedo, intensity } => ShaderData {
+                is_volume: false,
                 scatter: None,
-                albedo: None,
+                color: Some(ColorData {
+                    color: LinearRgb::BLACK,
+                    albedo: LinearRgb::BLACK,
+                    emitted: albedo * intensity,
+                    normal: manifold.normal,
+                    depth: manifold.t,
+                }),
                 pdf: 1.0,
             },
         }
     }
 
-    pub fn pdf(&self, manifold: &ManifoldLegacy, ray: &Ray) -> f32 {
+    pub fn pdf(&self, manifold: &Manifold, ray: &Ray) -> f32 {
         match *self {
-            Material::Flat { .. } => 1.0,
-            Material::Diffuse { .. } => diffuse_pdf(ray, manifold),
-            Material::Metallic { roughness, .. } => metallic_pdf(ray, manifold, roughness),
-            Material::Glass { roughness, ior, .. } => glass_pdf(ray, manifold, roughness, ior),
-            Material::Emissive { .. } => 1.0,
+            Surface::Diffuse { .. } => diffuse_pdf(ray, manifold),
+            Surface::Metallic { roughness, .. } => metallic_pdf(ray, manifold, roughness),
+            Surface::Glass { roughness, ior, .. } => glass_pdf(ray, manifold, roughness, ior),
+            Surface::Emissive { .. } => 1.0,
         }
     }
 }
 
 #[derive(Debug)]
-enum Pdf {
+enum Pdf<'pdf, 'a> {
     Diffuse,
     Metallic(f32),
     Glass(f32, f32),
-    Light(ObjectRef),
-    Mix(Box<Pdf>, Box<Pdf>, f32),
+    Light(&'a ObjectData),
+    Mix(&'pdf Pdf<'pdf, 'a>, &'pdf Pdf<'pdf, 'a>, f32),
 }
 
-impl Pdf {
-    pub fn scatter<R: Rng + ?Sized>(&self, rng: &mut R, manifold: &ManifoldLegacy) -> Ray {
+impl<'pdf, 'a> Pdf<'pdf, 'a> {
+    pub fn scatter<R: Rng + ?Sized>(&self, rng: &mut R, manifold: &Manifold) -> Ray {
         match *self {
             Self::Diffuse => {
                 let cosine = Cosine::new(manifold.normal.into());
@@ -259,14 +220,12 @@ impl Pdf {
                 let fuzz = fuzz * roughness;
                 Ray::new(origin, direction + fuzz)
             }
-            Self::Light(object) => {
-                let light = manifold.scene.get_object(object);
-
+            Self::Light(light) => {
                 let origin = manifold.position;
                 let direction = light.random_point(rng) - origin;
                 Ray::new(origin, direction)
             }
-            Self::Mix(ref a, ref b, x) => {
+            Self::Mix(a, b, x) => {
                 if rng.gen_bool(x as _) {
                     b.scatter(rng, manifold)
                 } else {
@@ -276,41 +235,40 @@ impl Pdf {
         }
     }
 
-    pub fn pdf(&self, ray: &Ray, manifold: &ManifoldLegacy, clip: &Clip) -> Option<f32> {
+    pub fn pdf(&self, ray: &Ray, manifold: &Manifold, clip: &Clip) -> Option<f32> {
         let p = self.pdf_impl(ray, manifold, clip);
-        if p.abs_diff_eq(&0.0, 1e-5) {
+        if p.abs() < 1e-5 {
             None
         } else {
             Some(p)
         }
     }
 
-    fn pdf_impl(&self, ray: &Ray, manifold: &ManifoldLegacy, clip: &Clip) -> f32 {
+    fn pdf_impl(&self, ray: &Ray, manifold: &Manifold, clip: &Clip) -> f32 {
         match *self {
             Self::Diffuse => diffuse_pdf(ray, manifold),
             Self::Metallic(roughness) => metallic_pdf(ray, manifold, roughness),
             Self::Glass(roughness, ior) => glass_pdf(ray, manifold, roughness, ior),
-            Self::Light(object) => light_pdf(object, ray, manifold, clip),
-            Self::Mix(ref a, ref b, x) => a
+            Self::Light(object) => light_pdf(ray, manifold, clip, object),
+            Self::Mix(a, b, x) => a
                 .pdf_impl(ray, manifold, clip)
                 .lerp(b.pdf_impl(ray, manifold, clip), x),
         }
     }
 }
 
-fn diffuse_pdf(ray: &Ray, manifold: &ManifoldLegacy) -> f32 {
+fn diffuse_pdf(ray: &Ray, manifold: &Manifold) -> f32 {
     manifold.normal.dot(ray.direction) * f32::consts::FRAC_1_PI
 }
 
-fn metallic_pdf(_ray: &Ray, _manifold: &ManifoldLegacy, _roughness: f32) -> f32 {
+fn metallic_pdf(_ray: &Ray, _manifold: &Manifold, _roughness: f32) -> f32 {
     1.0
 }
 
-fn glass_pdf(_ray: &Ray, _manifold: &ManifoldLegacy, _roughness: f32, _ior: f32) -> f32 {
+fn glass_pdf(_ray: &Ray, _manifold: &Manifold, _roughness: f32, _ior: f32) -> f32 {
     1.0
 }
 
-fn light_pdf(object: ObjectRef, ray: &Ray, manifold: &ManifoldLegacy, clip: &Clip) -> f32 {
-    let light = manifold.scene.get_object(object);
-    light.pdf(ray, clip, manifold.scene).unwrap_or_default()
+fn light_pdf(ray: &Ray, _manifold: &Manifold, clip: &Clip, object: &ObjectData) -> f32 {
+    object.pdf(ray, clip).unwrap_or_default()
 }

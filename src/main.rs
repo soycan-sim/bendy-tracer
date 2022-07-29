@@ -1,20 +1,16 @@
 use std::borrow::Cow;
-use std::fmt::Write as _;
-use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Write as _};
+use std::fmt::{self, Display, Write as _};
+use std::fs;
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Error};
 use bendy_tracer::color::LinearRgb;
-use bendy_tracer::scene::{
-    Camera, Cuboid, Data, Material, Object, ObjectFlags, Rect, Scene, Update, UpdateQueue,
-};
+use bendy_tracer::material::{Material, Materials};
+use bendy_tracer::scene::{Camera, Cuboid, Object, ObjectFlags, Rect, Scene};
 use bendy_tracer::tracer::{Buffer, ColorSpace, Config, RenderConfig, Status, Subsample, Tracer};
 use clap::{Parser, ValueEnum};
-use flate2::bufread::GzDecoder;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use glam::{Affine3A, EulerRot, Quat, Vec3, Vec3A};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 
@@ -26,6 +22,16 @@ enum Output {
     Full,
     Albedo,
     Normal,
+}
+
+impl Display for Output {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Full => write!(f, "full"),
+            Self::Albedo => write!(f, "albedo"),
+            Self::Normal => write!(f, "normal"),
+        }
+    }
 }
 
 impl Output {
@@ -55,7 +61,7 @@ struct Cli {
     #[clap(long, value_parser, default_value_t = 512)]
     height: usize,
 
-    #[clap(long, value_parser)]
+    #[clap(long, value_parser, default_value_t = Default::default())]
     output: Output,
 
     #[clap(long, value_parser, default_value_t = 64)]
@@ -90,36 +96,24 @@ fn main() -> Result<(), Error> {
 
     let mut window_buffer = vec![0_u32; window_width * window_height];
 
-    let mut scene = if args.scene.exists() {
+    let (mut scene, materials) = if args.scene.exists() {
         let path = &args.scene;
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
-        let scene = if path.extension() == Some("gz".as_ref()) {
-            let mut decoder = GzDecoder::new(reader);
-            serde_json::from_reader(&mut decoder)?
-        } else {
-            serde_json::from_reader(&mut reader)?
-        };
+        let scene = bendy_tracer::load(path)?;
 
         writeln!(io::stderr(), "loaded scene from {}", path.display())?;
 
         scene
     } else {
-        let mut scene = Scene::default();
+        let mut scene = Scene::new();
+        let mut materials = Materials::new();
 
-        let mat_light = scene.add_data(Data::new(Material::emissive(LinearRgb::WHITE, 20.0)));
-        let mat_white = scene.add_data(Data::new(Material::diffuse(LinearRgb::splat(0.73), 1.0)));
-        let mat_metal = scene.add_data(Data::new(Material::metallic(LinearRgb::splat(0.55), 0.01)));
-        let mat_red = scene.add_data(Data::new(Material::diffuse(
-            LinearRgb::new(0.7, 0.1, 0.1),
-            0.5,
-        )));
-        let mat_green = scene.add_data(Data::new(Material::diffuse(
-            LinearRgb::new(0.2, 0.7, 0.4),
-            0.8,
-        )));
+        let mat_light = materials.add(Material::emissive(LinearRgb::WHITE, 20.0));
+        let mat_white = materials.add(Material::diffuse(LinearRgb::splat(0.73)));
+        let mat_metal = materials.add(Material::metallic(LinearRgb::splat(0.55), 0.01));
+        let mat_red = materials.add(Material::diffuse(LinearRgb::new(0.7, 0.1, 0.1)));
+        let mat_green = materials.add(Material::diffuse(LinearRgb::new(0.2, 0.7, 0.4)));
 
-        scene.add_object(
+        scene.add(
             Object::new(Camera {
                 focal_length: 0.05,
                 fstop: 1.4,
@@ -130,7 +124,7 @@ fn main() -> Result<(), Error> {
             .with_translation(Vec3A::new(0.0, 2.5, 10.0)),
         );
         // left
-        scene.add_object(
+        scene.add(
             Object::new(Rect::new(
                 mat_green,
                 Vec3A::new(0.0, 0.0, -2.5),
@@ -139,7 +133,7 @@ fn main() -> Result<(), Error> {
             .with_translation(Vec3A::new(-2.5, 2.5, -2.5)),
         );
         // right
-        scene.add_object(
+        scene.add(
             Object::new(Rect::new(
                 mat_red,
                 Vec3A::new(0.0, 0.0, 2.5),
@@ -148,7 +142,7 @@ fn main() -> Result<(), Error> {
             .with_translation(Vec3A::new(2.5, 2.5, -2.5)),
         );
         // back
-        scene.add_object(
+        scene.add(
             Object::new(Rect::new(
                 mat_white,
                 Vec3A::new(2.5, 0.0, 0.0),
@@ -157,7 +151,7 @@ fn main() -> Result<(), Error> {
             .with_translation(Vec3A::new(0.0, 2.5, -5.0)),
         );
         // floor
-        scene.add_object(
+        scene.add(
             Object::new(Rect::new(
                 mat_white,
                 Vec3A::new(2.5, 0.0, 0.0),
@@ -166,7 +160,7 @@ fn main() -> Result<(), Error> {
             .with_translation(Vec3A::new(0.0, 0.0, -2.5)),
         );
         // ceiling
-        scene.add_object(
+        scene.add(
             Object::new(Rect::new(
                 mat_white,
                 Vec3A::new(2.5, 0.0, 0.0),
@@ -174,7 +168,7 @@ fn main() -> Result<(), Error> {
             ))
             .with_translation(Vec3A::new(0.0, 5.0, -2.5)),
         );
-        scene.add_object(
+        scene.add(
             Object::new(Rect::new(
                 mat_light,
                 Vec3A::new(0.5, 0.0, 0.0),
@@ -186,7 +180,7 @@ fn main() -> Result<(), Error> {
 
         // tall box
         let angle = 20_f32.to_radians();
-        scene.add_object(
+        scene.add(
             Object::new(Cuboid::new(
                 mat_metal,
                 Vec3A::new(0.5, 0.0, 0.0),
@@ -200,7 +194,7 @@ fn main() -> Result<(), Error> {
         );
 
         // short box
-        scene.add_object(
+        scene.add(
             Object::new(Cuboid::new(
                 mat_white,
                 Vec3A::new(0.5, 0.0, 0.0),
@@ -210,24 +204,25 @@ fn main() -> Result<(), Error> {
             .with_translation(Vec3A::new(1.0, 0.6, -1.4)),
         );
 
-        scene
+        (scene, materials)
     };
 
-    let mut camera = scene.find_by_tag("camera").unwrap();
+    let camera = scene.find_by_tag_mut("camera").unwrap();
 
-    let mut update_queue = UpdateQueue::new();
-    update_queue.push(Update::object(camera, move |object, _, _| {
-        let aspect_ratio = window_width as f32 / window_height as f32;
-        object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
-    }));
-    update_queue.commit(&mut scene);
+    let aspect_ratio = window_width as f32 / window_height as f32;
+    camera.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
 
-    let tracer = Tracer::with_config(Config {
-        output: args.output.into_output(),
-        chunks_x: 8,
-        chunks_y: 4,
-        ..Default::default()
-    });
+    let mut tracer = Tracer::with_config(
+        materials,
+        Config {
+            output: args.output.into_output(),
+            chunks_x: 8,
+            chunks_y: 4,
+            ..Default::default()
+        },
+    );
+
+    let mut bvh = scene.build_bvh();
 
     let mut buffer = Buffer::new(window_width, window_height, args.output.color_space());
     let max_samples = args.samples;
@@ -245,9 +240,11 @@ fn main() -> Result<(), Error> {
     while window.is_open() {
         prev_frame = Instant::now();
 
+        let camera = scene.find_by_tag("camera").unwrap();
+
         let samples = if buffer.samples() < max_samples { 1 } else { 0 };
         let status = tracer.render(
-            &scene,
+            &bvh,
             camera,
             &RenderConfig::with_samples_subsample(samples, subsample),
             &mut buffer,
@@ -299,39 +296,26 @@ fn main() -> Result<(), Error> {
         if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::K, KeyRepeat::No) {
             let path = &args.scene;
 
-            let file = File::create(path)?;
-            let mut writer = BufWriter::new(file);
-
-            if path.extension() == Some("gz".as_ref()) {
-                let mut encoder = GzEncoder::new(writer, Compression::default());
-                serde_json::to_writer_pretty(&mut encoder, &scene)?;
-            } else {
-                serde_json::to_writer_pretty(&mut writer, &scene)?;
-            }
+            bendy_tracer::save(path, &scene, &tracer.materials)?;
 
             writeln!(io::stderr(), "saved scene to {}", path.display())?;
         }
         if window.is_key_down(Key::LeftCtrl) && window.is_key_pressed(Key::L, KeyRepeat::No) {
             let path = &args.scene;
+            let (mut new_scene, materials) = bendy_tracer::load(path)?;
 
-            let file = File::open(path)?;
-            let mut reader = BufReader::new(file);
-            scene = if path.extension() == Some("gz".as_ref()) {
-                let mut decoder = GzDecoder::new(reader);
-                serde_json::from_reader(&mut decoder)?
-            } else {
-                serde_json::from_reader(&mut reader)?
-            };
-            buffer.clear();
+            let new_camera = new_scene.find_by_tag_mut("camera").unwrap();
 
-            camera = scene.find_by_tag("camera").unwrap();
-
-            update_queue.push(Update::object(camera, move |object, _, _| {
-                let aspect_ratio = window_width as f32 / window_height as f32;
-                object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
-            }));
+            let aspect_ratio = window_width as f32 / window_height as f32;
+            new_camera.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
 
             writeln!(io::stderr(), "loaded scene from {}", path.display())?;
+
+            scene = new_scene;
+            bvh = scene.build_bvh();
+            tracer.materials = materials;
+
+            buffer.clear();
         }
 
         let window_size = window.get_size();
@@ -341,13 +325,11 @@ fn main() -> Result<(), Error> {
             buffer.resize(window_width, window_height);
             window_buffer.resize(window_width * window_height, 0);
 
-            update_queue.push(Update::object(camera, move |object, _, _| {
-                let aspect_ratio = window_width as f32 / window_height as f32;
-                object.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
-            }));
-        }
+            let camera = scene.find_by_tag_mut("camera").unwrap();
 
-        update_queue.commit(&mut scene);
+            let aspect_ratio = window_width as f32 / window_height as f32;
+            camera.as_camera_mut().unwrap().aspect_ratio = aspect_ratio;
+        }
 
         let total_samples = buffer.samples();
         let samples = total_samples - last_samples;

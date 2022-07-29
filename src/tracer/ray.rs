@@ -2,8 +2,9 @@ use std::ops::Mul;
 
 use glam::{Affine3A, Quat, Vec3A};
 
+use crate::bvh::Aabb;
 use crate::color::LinearRgb;
-use crate::scene::{DataRef, ObjectRef, Scene};
+use crate::material::MaterialRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Face {
@@ -33,35 +34,23 @@ impl Face {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Manifold<'a> {
+pub struct Manifold {
     pub position: Vec3A,
     pub normal: Vec3A,
-    pub bbox: (Vec3A, Vec3A),
+    pub aabb: Aabb,
     pub face: Face,
     pub t: f32,
     pub ray: Ray,
-    pub object_ref: Option<ObjectRef>,
-    pub mat_ref: Option<DataRef>,
-    pub vol_ref: Option<DataRef>,
-    pub scene: &'a Scene,
+    pub material: MaterialRef,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ColorData {
     pub color: LinearRgb,
     pub albedo: LinearRgb,
+    pub emitted: LinearRgb,
     pub normal: Vec3A,
     pub depth: f32,
-}
-
-impl ColorData {
-    pub fn from_emitted(emitted: LinearRgb) -> Self {
-        Self {
-            color: emitted,
-            albedo: emitted,
-            ..Default::default()
-        }
-    }
 }
 
 impl Default for ColorData {
@@ -69,6 +58,7 @@ impl Default for ColorData {
         Self {
             color: LinearRgb::BLACK,
             albedo: LinearRgb::BLACK,
+            emitted: LinearRgb::BLACK,
             normal: Vec3A::ZERO,
             depth: f32::INFINITY,
         }
